@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (btn.dataset.tab === 'results') loadResults();
       if (btn.dataset.tab === 'history') loadHistory();
+      if (btn.dataset.tab === 'stats') loadStats();
       if (btn.dataset.tab === 'admin') loadAdminList();
     });
   });
@@ -280,6 +281,73 @@ function loadAdminList() {
       <button class="btn-danger" onclick="deleteRestaurant('${r.id}')">Verwijderen</button>
     </div>
   `).join('');
+}
+
+async function loadStats() {
+  const container = document.getElementById('stats-container');
+  try {
+    const res = await fetch('/api/stats');
+    const stats = await res.json();
+    let html = '';
+
+    // Fun facts banner
+    if (stats.funFacts.length > 0) {
+      html += '<div class="stats-facts">';
+      html += stats.funFacts.map(f => `<div class="fact-item">${f}</div>`).join('');
+      html += '</div>';
+    }
+
+    // Summary cards
+    html += '<div class="stats-summary">';
+    html += `<div class="stat-card"><div class="stat-value">${stats.totalWeeks}</div><div class="stat-label">Weken gestemd</div></div>`;
+    html += `<div class="stat-card"><div class="stat-value">${stats.totalVoters}</div><div class="stat-label">Unieke stemmers</div></div>`;
+    html += `<div class="stat-card"><div class="stat-value">${stats.avgVoters}</div><div class="stat-label">Gem. stemmers/week</div></div>`;
+    html += `<div class="stat-card"><div class="stat-value">${stats.avgVotesPerVoter}</div><div class="stat-label">Gem. stemmen/persoon</div></div>`;
+    html += '</div>';
+
+    // Top winners chart
+    if (stats.topWinners.length > 0) {
+      const maxWins = stats.topWinners[0].wins;
+      html += '<div class="stats-section"><h3>Meest gewonnen restaurants</h3>';
+      html += stats.topWinners.map(w => {
+        const pct = Math.round((w.wins / maxWins) * 100);
+        return `<div class="stat-bar">
+          <div class="stat-bar-name">${w.restaurant_name}</div>
+          <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%">${w.wins}x</div></div>
+        </div>`;
+      }).join('');
+      html += '</div>';
+    }
+
+    // Top voters chart
+    if (stats.topVoters.length > 0) {
+      const maxWeeks = stats.topVoters[0].weeks_active;
+      html += '<div class="stats-section"><h3>Actiefste stemmers</h3>';
+      html += stats.topVoters.map(v => {
+        const pct = Math.max(Math.round((v.weeks_active / maxWeeks) * 100), 10);
+        return `<div class="stat-bar">
+          <div class="stat-bar-name">${v.voter_name}</div>
+          <div class="stat-bar-track"><div class="stat-bar-fill voter-fill" style="width:${pct}%">${v.weeks_active} ${v.weeks_active === 1 ? 'week' : 'weken'} · ${v.total_votes} stemmen</div></div>
+        </div>`;
+      }).join('');
+      html += '</div>';
+    }
+
+    // Win streak
+    if (stats.bestStreak.count > 1) {
+      html += `<div class="stats-section"><h3>Langste winstreak</h3>
+        <div class="streak-card">${stats.bestStreak.name} — ${stats.bestStreak.count} weken op rij</div>
+      </div>`;
+    }
+
+    if (!stats.topWinners.length && !stats.topVoters.length) {
+      html = '<div class="empty-state"><h3>Nog geen statistieken</h3><p>Statistieken verschijnen na de eerste weken stemmen.</p></div>';
+    }
+
+    container.innerHTML = html;
+  } catch (err) {
+    container.innerHTML = '<div class="loading">Statistieken laden mislukt</div>';
+  }
 }
 
 // --- Actions ---

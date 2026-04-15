@@ -523,6 +523,99 @@ app.get('/api/history', (req, res) => {
   res.json(winners);
 });
 
+// Statistics
+app.get('/api/stats', (req, res) => {
+  // Most won restaurants
+  const topWinners = db.prepare(`
+    SELECT restaurant_name, restaurant_id, COUNT(*) as wins
+    FROM past_winners GROUP BY restaurant_id
+    ORDER BY wins DESC LIMIT 10
+  `).all();
+
+  // Most active voters (across all sessions)
+  const topVoters = db.prepare(`
+    SELECT voter_name, COUNT(DISTINCT session_id) as weeks_active, COUNT(*) as total_votes
+    FROM votes GROUP BY voter_name
+    ORDER BY weeks_active DESC, total_votes DESC LIMIT 10
+  `).all();
+
+  // Total weeks with votes
+  const totalWeeks = db.prepare('SELECT COUNT(DISTINCT session_id) as n FROM votes').get().n;
+
+  // Average voters per week
+  const avgVoters = db.prepare(`
+    SELECT AVG(voter_count) as avg FROM (
+      SELECT COUNT(DISTINCT voter_name) as voter_count FROM votes GROUP BY session_id
+    )
+  `).get().avg || 0;
+
+  // Average votes per voter per week
+  const avgVotesPerVoter = db.prepare(`
+    SELECT AVG(vote_count) as avg FROM (
+      SELECT COUNT(*) as vote_count FROM votes GROUP BY session_id, voter_name
+    )
+  `).get().avg || 0;
+
+  // Total unique voters ever
+  const totalVoters = db.prepare('SELECT COUNT(DISTINCT voter_name) as n FROM votes').get().n;
+
+  // Win streak (restaurant that won most consecutive weeks)
+  const allWinners = db.prepare('SELECT restaurant_name, restaurant_id FROM past_winners ORDER BY decided_at ASC').all();
+  let bestStreak = { name: '', count: 0 };
+  let currentStreak = { name: '', id: '', count: 0 };
+  for (const w of allWinners) {
+    if (w.restaurant_id === currentStreak.id) {
+      currentStreak.count++;
+    } else {
+      currentStreak = { name: w.restaurant_name, id: w.restaurant_id, count: 1 };
+    }
+    if (currentStreak.count > bestStreak.count) {
+      bestStreak = { name: currentStreak.name, count: currentStreak.count };
+    }
+  }
+
+  // Fun facts
+  const funFacts = [];
+
+  if (topWinners.length > 0) {
+    const top = topWinners[0];
+    const totalWins = db.prepare('SELECT COUNT(*) as n FROM past_winners').get().n;
+    if (totalWins > 0) {
+      const pct = Math.round((top.wins / totalWins) * 100);
+      funFacts.push(`${top.restaurant_name} heeft ${top.wins} van de ${totalWins} weken gewonnen (${pct}%)`);
+    }
+  }
+
+  if (bestStreak.count > 1) {
+    funFacts.push(`${bestStreak.name} won ${bestStreak.count} weken op rij — de langste streak!`);
+  }
+
+  const multiVoters = db.prepare(`
+    SELECT voter_name, COUNT(*) as cnt FROM votes
+    WHERE session_id = (SELECT MAX(id) FROM voting_sessions)
+    GROUP BY voter_name HAVING cnt >= 3
+    ORDER BY cnt DESC LIMIT 1
+  `).get();
+  if (multiVoters) {
+    funFacts.push(`${multiVoters.voter_name} stemde op ${multiVoters.cnt} restaurants deze week`);
+  }
+
+  if (totalVoters > 0 && totalWeeks > 1) {
+    funFacts.push(`Gemiddeld stemmen ${Math.round(avgVoters)} collega's per week`);
+  }
+
+  res.json({
+    topWinners,
+    topVoters,
+    totalWeeks,
+    totalVoters,
+    avgVoters: Math.round(avgVoters * 10) / 10,
+    avgVotesPerVoter: Math.round(avgVotesPerVoter * 10) / 10,
+    bestStreak,
+    funFacts,
+  });
+});
+
 app.get('/api/state/export', (req, res) => {
   const sessions = db.prepare('SELECT * FROM voting_sessions').all();
   const votes = db.prepare('SELECT * FROM votes').all();
