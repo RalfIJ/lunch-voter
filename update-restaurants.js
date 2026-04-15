@@ -1,4 +1,4 @@
-// Haalt restaurants op van Thuisbezorgd en slaat ze op in seed-data.json.
+// Haalt restaurants op van Thuisbezorgd en bewaart de huidige stemstaat.
 // Draai lokaal: npm run update
 // Push daarna naar GitHub zodat Render automatisch redeployt.
 
@@ -6,6 +6,24 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const LIVE_URL = process.env.LIVE_URL || 'https://lunch-voter.onrender.com';
+
+// --- Stap 1: Huidige stemstaat ophalen van live app ---
+console.log(`Stemstaat ophalen van ${LIVE_URL}...`);
+try {
+  const stateJson = execSync(
+    `curl -s "${LIVE_URL}/api/state/export"`,
+    { encoding: 'utf-8', timeout: 30000 }
+  );
+  const state = JSON.parse(stateJson);
+  const statePath = path.join(__dirname, 'seed-state.json');
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+  console.log(`  ${state.sessions?.length || 0} sessies, ${state.votes?.length || 0} stemmen, ${state.past_winners?.length || 0} winnaars opgeslagen`);
+} catch (err) {
+  console.warn('  Kon stemstaat niet ophalen (app nog niet live?). Doorgaan zonder.');
+}
+
+// --- Stap 2: Restaurants ophalen van Thuisbezorgd ---
 console.log('Restaurants ophalen van thuisbezorgd.nl...');
 
 const html = execSync(
@@ -66,4 +84,7 @@ for (const [id, r] of Object.entries(restaurantData)) {
 const seedPath = path.join(__dirname, 'seed-data.json');
 fs.writeFileSync(seedPath, JSON.stringify(restaurants, null, 2));
 console.log(`${restaurants.length} restaurants opgeslagen in seed-data.json`);
-console.log('Push nu naar GitHub: git add seed-data.json && git commit -m "Update restaurants" && git push');
+
+// --- Stap 3: Commit en push ---
+console.log('\nKlaar! Push naar GitHub:');
+console.log('  git add seed-data.json seed-state.json && git commit -m "Update restaurants" && git push');

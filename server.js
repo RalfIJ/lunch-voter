@@ -186,13 +186,38 @@ function upsertRestaurants(restaurants) {
 }
 
 // --- Seed from JSON if DB is empty ---
+const fs = require('fs');
+
 const count = db.prepare('SELECT COUNT(*) as n FROM restaurants').get().n;
 if (count === 0) {
   const seedPath = path.join(__dirname, 'seed-data.json');
-  if (require('fs').existsSync(seedPath)) {
-    const seedData = JSON.parse(require('fs').readFileSync(seedPath, 'utf-8'));
+  if (fs.existsSync(seedPath)) {
+    const seedData = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
     upsertRestaurants(seedData);
     console.log(`Seeded ${seedData.length} restaurants from seed-data.json`);
+  }
+}
+
+// Restore voting state if available
+const statePath = path.join(__dirname, 'seed-state.json');
+if (fs.existsSync(statePath)) {
+  const voteCount = db.prepare('SELECT COUNT(*) as n FROM votes').get().n;
+  const winnerCount = db.prepare('SELECT COUNT(*) as n FROM past_winners').get().n;
+  if (voteCount === 0 && winnerCount === 0) {
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    const tx = db.transaction(() => {
+      for (const s of state.sessions || []) {
+        db.prepare('INSERT OR IGNORE INTO voting_sessions (id, week_key, created_at, closed) VALUES (?, ?, ?, ?)').run(s.id, s.week_key, s.created_at, s.closed);
+      }
+      for (const v of state.votes || []) {
+        db.prepare('INSERT OR IGNORE INTO votes (id, session_id, voter_name, restaurant_id, voted_at) VALUES (?, ?, ?, ?, ?)').run(v.id, v.session_id, v.voter_name, v.restaurant_id, v.voted_at);
+      }
+      for (const w of state.past_winners || []) {
+        db.prepare('INSERT OR IGNORE INTO past_winners (id, week_key, restaurant_id, restaurant_name, vote_count, decided_at) VALUES (?, ?, ?, ?, ?, ?)').run(w.id, w.week_key, w.restaurant_id, w.restaurant_name, w.vote_count, w.decided_at);
+      }
+    });
+    tx();
+    console.log(`Restored state: ${(state.sessions||[]).length} sessions, ${(state.votes||[]).length} votes, ${(state.past_winners||[]).length} winners`);
   }
 }
 
@@ -380,6 +405,14 @@ app.post('/api/voting/finalize', (req, res) => {
 app.get('/api/history', (req, res) => {
   const winners = db.prepare('SELECT * FROM past_winners ORDER BY decided_at DESC LIMIT 52').all();
   res.json(winners);
+});
+
+// Export full voting state (for backup before redeploy)
+app.get('/api/state/export', (req, res) => {
+  const sessions = db.prepare('SELECT * FROM voting_sessions').all();
+  const votes = db.prepare('SELECT * FROM votes').all();
+  const past_winners = db.prepare('SELECT * FROM past_winners').all();
+  res.json({ sessions, votes, past_winners });
 });
 
 // --- Start ---
