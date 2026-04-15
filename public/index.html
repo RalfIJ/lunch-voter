@@ -38,8 +38,13 @@
       <div id="login-banner" class="login-banner" style="display:none">
         <div class="login-banner-content">
           <h3>Log in om te stemmen</h3>
-          <p>Gebruik je Microsoft account om te stemmen op je favoriete restaurant.</p>
-          <a href="/auth/login" class="btn-login">Inloggen met Microsoft</a>
+          <p>Voer je naam en de team PIN in.</p>
+          <form id="login-form" class="login-form">
+            <input type="text" id="login-name" placeholder="Jouw naam" required autocomplete="given-name">
+            <input type="password" id="login-pin" placeholder="Team PIN" required>
+            <button type="submit" class="btn-login">Inloggen</button>
+          </form>
+          <div id="login-error" class="login-error"></div>
         </div>
       </div>
 

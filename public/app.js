@@ -84,6 +84,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Login form
+  document.getElementById('login-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('login-name').value.trim();
+    const pin = document.getElementById('login-pin').value;
+    const errorEl = document.getElementById('login-error');
+    errorEl.textContent = '';
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        errorEl.textContent = data.error;
+        return;
+      }
+      await checkAuth();
+      loadVotingStatus();
+    } catch (err) {
+      errorEl.textContent = 'Inloggen mislukt. Probeer het opnieuw.';
+    }
+  });
+
   // Name input (for when auth is disabled)
   const voterInput = document.getElementById('voter-name');
   if (voterInput) {
@@ -120,38 +146,26 @@ function renderAuthUI() {
 
   if (authState.authEnabled) {
     if (authState.user) {
-      // Logged in — set voter name from Microsoft account
       voterName = authState.user.name;
-      // Hide the manual name input, show user info
       voteHeader.innerHTML = `
         <div class="voter-input">
-          <span class="user-badge">Ingelogd als <strong>${authState.user.name}</strong></span>
+          <span class="user-badge">Ingelogd als <strong>${authState.user.name}</strong>${authState.user.isAdmin ? ' <span class="admin-tag">beheerder</span>' : ''}</span>
           <a href="/auth/logout" class="btn-logout">Uitloggen</a>
         </div>
         <div id="week-info" class="week-info"></div>
       `;
       if (loginBanner) loginBanner.style.display = 'none';
 
-      // Show/hide admin tab
       const adminBtn = document.querySelector('[data-tab="admin"]');
       if (adminBtn) adminBtn.style.display = authState.user.isAdmin ? '' : 'none';
     } else {
-      // Not logged in — show login prompt
-      if (loginBanner) {
-        loginBanner.style.display = 'block';
-      }
-      voteHeader.innerHTML = `
-        <div class="voter-input">
-          <a href="/auth/login" class="btn-login">Inloggen met Microsoft</a>
-        </div>
-        <div id="week-info" class="week-info"></div>
-      `;
-      // Hide admin tab
+      if (loginBanner) loginBanner.style.display = 'block';
+      voteHeader.style.display = 'none';
+
       const adminBtn = document.querySelector('[data-tab="admin"]');
       if (adminBtn) adminBtn.style.display = 'none';
     }
   } else {
-    // Auth disabled — use manual name input
     voterName = localStorage.getItem('lunchVoterName') || '';
     const voterInput = document.getElementById('voter-name');
     if (voterInput) voterInput.value = voterName;
@@ -320,7 +334,7 @@ async function refreshRestaurants() {
 
 async function castVote(restaurantId) {
   if (authState.authEnabled && !authState.user) {
-    window.location.href = '/auth/login';
+    alert('Log eerst in om te stemmen.');
     return;
   }
   if (!authState.authEnabled && !voterName) {
@@ -336,7 +350,8 @@ async function castVote(restaurantId) {
       body: JSON.stringify({ voterName, restaurantId }),
     });
     if (res.status === 401) {
-      window.location.href = '/auth/login';
+      alert('Je sessie is verlopen. Log opnieuw in.');
+      await checkAuth();
       return;
     }
     await loadVotingStatus();

@@ -27,98 +27,56 @@ if (process.env.NODE_ENV === 'production') {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Microsoft OAuth2 config ---
-const MS_CLIENT_ID = process.env.MS_CLIENT_ID || '';
-const MS_CLIENT_SECRET = process.env.MS_CLIENT_SECRET || '';
-const MS_TENANT = process.env.MS_TENANT || 'common';
-const MS_REDIRECT_URI = process.env.MS_REDIRECT_URI || 'http://localhost:3000/auth/callback';
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+// --- Team PIN auth ---
+const IS_DEV = process.env.NODE_ENV !== 'production';
+const TEAM_PIN = process.env.TEAM_PIN || '';
+const ADMIN_PIN = process.env.ADMIN_PIN || '';
+const TEAM_MEMBERS = (process.env.TEAM_MEMBERS || '')
+  .split(',').map(n => n.trim().toLowerCase()).filter(Boolean);
 
-const MS_AUTH_URL = `https://login.microsoftonline.com/${MS_TENANT}/oauth2/v2.0/authorize`;
-const MS_TOKEN_URL = `https://login.microsoftonline.com/${MS_TENANT}/oauth2/v2.0/token`;
+function authEnabled() {
+  return !IS_DEV || TEAM_PIN;
+}
 
 // --- Auth middleware ---
-const IS_DEV = process.env.NODE_ENV !== 'production';
-
 function requireAuth(req, res, next) {
-  if (IS_DEV && !MS_CLIENT_ID) return next(); // Only skip auth in development
+  if (!authEnabled()) return next();
   if (req.session?.user) return next();
   res.status(401).json({ error: 'Niet ingelogd' });
 }
 
 function requireAdmin(req, res, next) {
-  if (IS_DEV && !MS_CLIENT_ID) return next(); // Only skip auth in development
+  if (!authEnabled()) return next();
   if (!req.session?.user) return res.status(401).json({ error: 'Niet ingelogd' });
   if (!req.session.user.isAdmin) return res.status(403).json({ error: 'Geen beheerrechten' });
   next();
 }
 
 // --- Auth routes ---
-app.get('/auth/login', (req, res) => {
-  if (!MS_CLIENT_ID) return res.redirect('/');
-  const state = crypto.randomBytes(16).toString('hex');
-  req.session.authState = state;
-  const params = new URLSearchParams({
-    client_id: MS_CLIENT_ID,
-    response_type: 'code',
-    redirect_uri: MS_REDIRECT_URI,
-    scope: 'openid profile email User.Read',
-    state,
-    response_mode: 'query',
-  });
-  res.redirect(`${MS_AUTH_URL}?${params}`);
-});
+app.post('/api/auth/login', (req, res) => {
+  const { name, pin } = req.body;
+  if (!name || !pin) return res.status(400).json({ error: 'Naam en PIN zijn verplicht' });
 
-app.get('/auth/callback', async (req, res) => {
-  if (!MS_CLIENT_ID) return res.redirect('/');
-  const { code, state } = req.query;
+  const normalizedName = name.trim().toLowerCase();
 
-  if (!code || state !== req.session.authState) {
-    return res.status(400).send('Ongeldige login poging');
+  // Check admin login
+  if (ADMIN_PIN && pin === ADMIN_PIN) {
+    req.session.user = { name: normalizedName, isAdmin: true };
+    return res.json({ user: req.session.user });
   }
-  delete req.session.authState;
 
-  try {
-    // Exchange code for token
-    const tokenRes = await fetch(MS_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: MS_CLIENT_ID,
-        client_secret: MS_CLIENT_SECRET,
-        code,
-        redirect_uri: MS_REDIRECT_URI,
-        grant_type: 'authorization_code',
-        scope: 'openid profile email User.Read',
-      }),
-    });
-    const tokens = await tokenRes.json();
-
-    if (tokens.error) {
-      console.error('Token error:', tokens);
-      return res.status(400).send('Login mislukt');
-    }
-
-    // Get user profile from Microsoft Graph
-    const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    });
-    const profile = await profileRes.json();
-
-    const email = (profile.mail || profile.userPrincipalName || '').toLowerCase();
-    const displayName = profile.displayName || profile.givenName || email.split('@')[0];
-
-    req.session.user = {
-      email,
-      name: displayName,
-      isAdmin: ADMIN_EMAILS.includes(email),
-    };
-
-    res.redirect('/');
-  } catch (err) {
-    console.error('Auth callback error:', err);
-    res.status(500).send('Login mislukt');
+  // Check team login
+  if (TEAM_PIN && pin !== TEAM_PIN) {
+    return res.status(401).json({ error: 'Onjuiste PIN' });
   }
+
+  // Check whitelist (if configured)
+  if (TEAM_MEMBERS.length > 0 && !TEAM_MEMBERS.includes(normalizedName)) {
+    return res.status(403).json({ error: 'Naam niet gevonden in het team. Vraag een beheerder om je toe te voegen.' });
+  }
+
+  req.session.user = { name: normalizedName, isAdmin: false };
+  res.json({ user: req.session.user });
 });
 
 app.get('/auth/logout', (req, res) => {
@@ -127,8 +85,7 @@ app.get('/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', (req, res) => {
-  const authEnabled = MS_CLIENT_ID || !IS_DEV; // Always enabled in production
-  if (!authEnabled) {
+  if (!authEnabled()) {
     return res.json({ authEnabled: false });
   }
   if (req.session?.user) {
@@ -508,6 +465,6 @@ app.get('/api/state/export', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Lunch Voter running at http://localhost:${PORT}`);
-  if (MS_CLIENT_ID) console.log('Microsoft OAuth enabled');
-  else console.log('Auth disabled (set MS_CLIENT_ID to enable)');
+  if (authEnabled()) console.log(`Auth enabled (PIN) | ${TEAM_MEMBERS.length} teamleden`);
+  else console.log('Auth disabled (development mode)');
 });
