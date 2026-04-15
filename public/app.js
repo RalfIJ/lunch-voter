@@ -2,7 +2,8 @@
 let restaurants = [];
 let votingStatus = {};
 let cuisines = [];
-let voterName = localStorage.getItem('lunchVoterName') || '';
+let authState = { authEnabled: false, user: null };
+let voterName = '';
 
 // Filter/sort state
 let currentSort = 'rating-desc';
@@ -11,13 +12,9 @@ let currentRatingFilter = 0;
 let currentOpenFilter = true;
 
 // --- Init ---
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('voter-name').value = voterName;
-  document.getElementById('voter-name').addEventListener('input', (e) => {
-    voterName = e.target.value.trim();
-    localStorage.setItem('lunchVoterName', voterName);
-    renderRestaurants();
-  });
+document.addEventListener('DOMContentLoaded', async () => {
+  // Check auth state first
+  await checkAuth();
 
   // Tab navigation
   document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -60,11 +57,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const name = document.getElementById('add-name').value.trim();
     const cuisine = document.getElementById('add-cuisine').value.trim();
     if (!name) return;
-    await fetch('/api/restaurants', {
+    const res = await fetch('/api/restaurants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, cuisine }),
     });
+    if (res.status === 403) return alert('Alleen beheerders mogen restaurants toevoegen');
     document.getElementById('add-name').value = '';
     document.getElementById('add-cuisine').value = '';
     await loadRestaurants();
@@ -77,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!confirm('Weet je zeker dat je de stemming wilt afsluiten en een winnaar wilt kiezen?')) return;
     const res = await fetch('/api/voting/finalize', { method: 'POST' });
     const data = await res.json();
+    if (res.status === 403) return alert('Alleen beheerders mogen de stemming afsluiten');
     if (data.winner) {
       alert(`Winnaar: ${data.winner.restaurant_name}!`);
       loadResults();
@@ -84,6 +83,16 @@ document.addEventListener('DOMContentLoaded', () => {
       alert(data.error || 'Er is iets misgegaan');
     }
   });
+
+  // Name input (for when auth is disabled)
+  const voterInput = document.getElementById('voter-name');
+  if (voterInput) {
+    voterInput.addEventListener('input', (e) => {
+      voterName = e.target.value.trim();
+      localStorage.setItem('lunchVoterName', voterName);
+      renderRestaurants();
+    });
+  }
 
   // Load data
   loadRestaurants();
@@ -93,6 +102,61 @@ document.addEventListener('DOMContentLoaded', () => {
   // Auto-refresh every 30s
   setInterval(loadVotingStatus, 30000);
 });
+
+// --- Auth ---
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/me');
+    authState = await res.json();
+  } catch (err) {
+    authState = { authEnabled: false, user: null };
+  }
+  renderAuthUI();
+}
+
+function renderAuthUI() {
+  const voteHeader = document.querySelector('.vote-header');
+  const loginBanner = document.getElementById('login-banner');
+
+  if (authState.authEnabled) {
+    if (authState.user) {
+      // Logged in — set voter name from Microsoft account
+      voterName = authState.user.name;
+      // Hide the manual name input, show user info
+      voteHeader.innerHTML = `
+        <div class="voter-input">
+          <span class="user-badge">Ingelogd als <strong>${authState.user.name}</strong></span>
+          <a href="/auth/logout" class="btn-logout">Uitloggen</a>
+        </div>
+        <div id="week-info" class="week-info"></div>
+      `;
+      if (loginBanner) loginBanner.style.display = 'none';
+
+      // Show/hide admin tab
+      const adminBtn = document.querySelector('[data-tab="admin"]');
+      if (adminBtn) adminBtn.style.display = authState.user.isAdmin ? '' : 'none';
+    } else {
+      // Not logged in — show login prompt
+      if (loginBanner) {
+        loginBanner.style.display = 'block';
+      }
+      voteHeader.innerHTML = `
+        <div class="voter-input">
+          <a href="/auth/login" class="btn-login">Inloggen met Microsoft</a>
+        </div>
+        <div id="week-info" class="week-info"></div>
+      `;
+      // Hide admin tab
+      const adminBtn = document.querySelector('[data-tab="admin"]');
+      if (adminBtn) adminBtn.style.display = 'none';
+    }
+  } else {
+    // Auth disabled — use manual name input
+    voterName = localStorage.getItem('lunchVoterName') || '';
+    const voterInput = document.getElementById('voter-name');
+    if (voterInput) voterInput.value = voterName;
+  }
+}
 
 // --- Data loading ---
 async function loadRestaurants() {
@@ -135,7 +199,6 @@ async function loadResults() {
   const winnerSection = document.getElementById('winner-section');
   const finalizeSection = document.getElementById('finalize-section');
 
-  // Check for existing winner
   const existingWinner = votingStatus.pastWinners?.find(w => w.week_key === votingStatus.weekKey);
   if (existingWinner) {
     winnerSection.style.display = 'block';
@@ -174,10 +237,10 @@ async function loadResults() {
     `;
   }
 
-  // Show who voted
   if (votingStatus.votes?.length > 0) {
+    const uniqueVoters = [...new Set(votingStatus.votes.map(v => v.voter_name))];
     html += '<div class="voters-list">Stemmers: ';
-    html += votingStatus.votes.map(v => `<span>${v.voter_name}</span>`).join('');
+    html += uniqueVoters.map(v => `<span>${v}</span>`).join('');
     html += '</div>';
   }
 
@@ -256,18 +319,26 @@ async function refreshRestaurants() {
 }
 
 async function castVote(restaurantId) {
-  if (!voterName) {
+  if (authState.authEnabled && !authState.user) {
+    window.location.href = '/auth/login';
+    return;
+  }
+  if (!authState.authEnabled && !voterName) {
     alert('Vul eerst je naam in!');
     document.getElementById('voter-name').focus();
     return;
   }
 
   try {
-    await fetch('/api/voting/vote', {
+    const res = await fetch('/api/voting/vote', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ voterName, restaurantId }),
     });
+    if (res.status === 401) {
+      window.location.href = '/auth/login';
+      return;
+    }
     await loadVotingStatus();
   } catch (err) {
     alert('Stem uitbrengen mislukt. Probeer het opnieuw.');
@@ -276,7 +347,8 @@ async function castVote(restaurantId) {
 
 async function deleteRestaurant(id) {
   if (!confirm('Dit restaurant verwijderen?')) return;
-  await fetch(`/api/restaurants/${id}`, { method: 'DELETE' });
+  const res = await fetch(`/api/restaurants/${id}`, { method: 'DELETE' });
+  if (res.status === 403) return alert('Alleen beheerders mogen restaurants verwijderen');
   await loadRestaurants();
   loadCuisines();
   loadAdminList();
@@ -320,17 +392,19 @@ function renderRestaurants() {
     return;
   }
 
-  // Find current user's votes (multiple allowed)
+  // Find current user's votes
   const myVotes = votingStatus.votes?.filter(v => v.voter_name === voterName.toLowerCase()) || [];
   const myVotedIds = new Set(myVotes.map(v => v.restaurant_id));
   const currentVoteEl = document.getElementById('current-vote');
   const currentVoteNameEl = document.getElementById('current-vote-name');
 
-  if (myVotes.length > 0) {
-    currentVoteEl.style.display = 'flex';
-    currentVoteNameEl.textContent = myVotes.map(v => v.restaurant_name).join(', ');
-  } else {
-    currentVoteEl.style.display = 'none';
+  if (currentVoteEl && currentVoteNameEl) {
+    if (myVotes.length > 0) {
+      currentVoteEl.style.display = 'flex';
+      currentVoteNameEl.textContent = myVotes.map(v => v.restaurant_name).join(', ');
+    } else {
+      currentVoteEl.style.display = 'none';
+    }
   }
 
   // Build vote count map
@@ -343,34 +417,22 @@ function renderRestaurants() {
 
   // Filter
   let filtered = restaurants.filter(r => {
-    if (currentCuisineFilter && !(r.cuisine || '').split(',').map(c => c.trim()).includes(currentCuisineFilter)) {
-      return false;
-    }
-    if (currentRatingFilter > 0 && (r.rating || 0) < currentRatingFilter) {
-      return false;
-    }
-    if (currentOpenFilter && !r.is_open) {
-      return false;
-    }
+    if (currentCuisineFilter && !(r.cuisine || '').split(',').map(c => c.trim()).includes(currentCuisineFilter)) return false;
+    if (currentRatingFilter > 0 && (r.rating || 0) < currentRatingFilter) return false;
+    if (currentOpenFilter && !r.is_open) return false;
     return true;
   });
 
   // Sort
   const [sortField, sortDir] = currentSort.split('-');
   const dir = sortDir === 'asc' ? 1 : -1;
-
   filtered.sort((a, b) => {
-    if (sortField === 'name') {
-      return dir * a.name.localeCompare(b.name, 'nl');
-    } else if (sortField === 'rating') {
-      return dir * ((a.rating || 0) - (b.rating || 0));
-    } else if (sortField === 'votes') {
-      return dir * ((voteCounts[a.id] || 0) - (voteCounts[b.id] || 0));
-    }
+    if (sortField === 'name') return dir * a.name.localeCompare(b.name, 'nl');
+    if (sortField === 'rating') return dir * ((a.rating || 0) - (b.rating || 0));
+    if (sortField === 'votes') return dir * ((voteCounts[a.id] || 0) - (voteCounts[b.id] || 0));
     return 0;
   });
 
-  // Update count
   if (countEl) {
     countEl.textContent = filtered.length === restaurants.length
       ? `${filtered.length} restaurants`

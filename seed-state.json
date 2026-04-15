@@ -11,58 +11,93 @@
     {
       "id": 1,
       "session_id": 1,
-      "voter_name": "sheik",
-      "restaurant_id": "9453913",
-      "voted_at": "2026-04-15 09:30:00"
+      "voter_name": "andré",
+      "restaurant_id": "9660026",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 2,
       "session_id": 1,
-      "voter_name": "peter",
-      "restaurant_id": "9660026",
-      "voted_at": "2026-04-15 09:31:00"
+      "voter_name": "bas",
+      "restaurant_id": "1219896",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 3,
       "session_id": 1,
-      "voter_name": "ralf",
-      "restaurant_id": "10557413",
-      "voted_at": "2026-04-15 11:52:05"
+      "voter_name": "bas",
+      "restaurant_id": "813885",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 4,
       "session_id": 1,
-      "voter_name": "sjoerd",
-      "restaurant_id": "8947798",
-      "voted_at": "2026-04-15 11:54:26"
+      "voter_name": "bas",
+      "restaurant_id": "9660026",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 5,
       "session_id": 1,
-      "voter_name": "andré",
-      "restaurant_id": "9660026",
-      "voted_at": "2026-04-15 11:40:08"
+      "voter_name": "bas",
+      "restaurant_id": "9945363",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 6,
       "session_id": 1,
-      "voter_name": "romeo",
-      "restaurant_id": "9660026",
-      "voted_at": "2026-04-15 11:55:23"
+      "voter_name": "paul",
+      "restaurant_id": "16500843",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 7,
       "session_id": 1,
-      "voter_name": "bas",
-      "restaurant_id": "813885",
-      "voted_at": "2026-04-15 11:56:40"
+      "voter_name": "peter",
+      "restaurant_id": "9660026",
+      "voted_at": "2026-04-15 10:00:00"
     },
     {
       "id": 8,
       "session_id": 1,
-      "voter_name": "paul",
-      "restaurant_id": "16500843",
-      "voted_at": "2026-04-15 11:59:25"
+      "voter_name": "ralf",
+      "restaurant_id": "10557413",
+      "voted_at": "2026-04-15 10:00:00"
+    },
+    {
+      "id": 9,
+      "session_id": 1,
+      "voter_name": "ralf",
+      "restaurant_id": "3764318",
+      "voted_at": "2026-04-15 10:00:00"
+    },
+    {
+      "id": 10,
+      "session_id": 1,
+      "voter_name": "ralf",
+      "restaurant_id": "9660026",
+      "voted_at": "2026-04-15 10:00:00"
+    },
+    {
+      "id": 11,
+      "session_id": 1,
+      "voter_name": "romeo",
+      "restaurant_id": "9660026",
+      "voted_at": "2026-04-15 10:00:00"
+    },
+    {
+      "id": 12,
+      "session_id": 1,
+      "voter_name": "sheik",
+      "restaurant_id": "9453913",
+      "voted_at": "2026-04-15 10:00:00"
+    },
+    {
+      "id": 13,
+      "session_id": 1,
+      "voter_name": "sjoerd",
+      "restaurant_id": "8947798",
+      "voted_at": "2026-04-15 10:00:00"
     }
   ],
   "past_winners": []

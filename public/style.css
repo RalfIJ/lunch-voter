@@ -178,6 +178,69 @@ h2 {
   margin-bottom: 1.5rem;
 }
 
+/* ---- Auth ---- */
+.login-banner {
+  background: linear-gradient(135deg, var(--bg-elevated) 0%, rgba(211,34,68,0.1) 100%);
+  border: 1px solid rgba(211,34,68,0.25);
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+.login-banner h3 {
+  font-size: 1.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.login-banner p {
+  color: var(--text-light);
+  margin-bottom: 1.2rem;
+  font-size: 0.9rem;
+}
+
+.btn-login {
+  display: inline-block;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: white;
+  padding: 0.7rem 1.8rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+  transition: all var(--transition);
+  box-shadow: 0 4px 15px rgba(211,34,68,0.3);
+}
+
+.btn-login:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(211,34,68,0.4);
+}
+
+.btn-logout {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  text-decoration: none;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+}
+
+.btn-logout:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.user-badge {
+  font-size: 0.95rem;
+  color: var(--text-light);
+}
+
+.user-badge strong {
+  color: var(--text);
+}
+
 /* ---- Quote Banner ---- */
 .quote-banner {
   background: linear-gradient(135deg, var(--bg-elevated) 0%, rgba(211,34,68,0.12) 100%);

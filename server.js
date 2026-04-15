@@ -1,10 +1,138 @@
 const express = require('express');
+const session = require('express-session');
 const Database = require('better-sqlite3');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
+
+// --- Session setup ---
+app.use(session({
+  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
+    sameSite: 'lax',
+  },
+}));
+
+// Trust proxy for secure cookies behind Render's load balancer
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 app.use(express.static(path.join(__dirname, 'public')));
+
+// --- Microsoft OAuth2 config ---
+const MS_CLIENT_ID = process.env.MS_CLIENT_ID || '';
+const MS_CLIENT_SECRET = process.env.MS_CLIENT_SECRET || '';
+const MS_TENANT = process.env.MS_TENANT || 'common';
+const MS_REDIRECT_URI = process.env.MS_REDIRECT_URI || 'http://localhost:3000/auth/callback';
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+
+const MS_AUTH_URL = `https://login.microsoftonline.com/${MS_TENANT}/oauth2/v2.0/authorize`;
+const MS_TOKEN_URL = `https://login.microsoftonline.com/${MS_TENANT}/oauth2/v2.0/token`;
+
+// --- Auth middleware ---
+function requireAuth(req, res, next) {
+  if (!MS_CLIENT_ID) return next(); // Auth disabled if no client ID configured
+  if (req.session?.user) return next();
+  res.status(401).json({ error: 'Niet ingelogd' });
+}
+
+function requireAdmin(req, res, next) {
+  if (!MS_CLIENT_ID) return next();
+  if (!req.session?.user) return res.status(401).json({ error: 'Niet ingelogd' });
+  if (!req.session.user.isAdmin) return res.status(403).json({ error: 'Geen beheerrechten' });
+  next();
+}
+
+// --- Auth routes ---
+app.get('/auth/login', (req, res) => {
+  if (!MS_CLIENT_ID) return res.redirect('/');
+  const state = crypto.randomBytes(16).toString('hex');
+  req.session.authState = state;
+  const params = new URLSearchParams({
+    client_id: MS_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: MS_REDIRECT_URI,
+    scope: 'openid profile email User.Read',
+    state,
+    response_mode: 'query',
+  });
+  res.redirect(`${MS_AUTH_URL}?${params}`);
+});
+
+app.get('/auth/callback', async (req, res) => {
+  if (!MS_CLIENT_ID) return res.redirect('/');
+  const { code, state } = req.query;
+
+  if (!code || state !== req.session.authState) {
+    return res.status(400).send('Ongeldige login poging');
+  }
+  delete req.session.authState;
+
+  try {
+    // Exchange code for token
+    const tokenRes = await fetch(MS_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: MS_CLIENT_ID,
+        client_secret: MS_CLIENT_SECRET,
+        code,
+        redirect_uri: MS_REDIRECT_URI,
+        grant_type: 'authorization_code',
+        scope: 'openid profile email User.Read',
+      }),
+    });
+    const tokens = await tokenRes.json();
+
+    if (tokens.error) {
+      console.error('Token error:', tokens);
+      return res.status(400).send('Login mislukt');
+    }
+
+    // Get user profile from Microsoft Graph
+    const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    const profile = await profileRes.json();
+
+    const email = (profile.mail || profile.userPrincipalName || '').toLowerCase();
+    const displayName = profile.displayName || profile.givenName || email.split('@')[0];
+
+    req.session.user = {
+      email,
+      name: displayName,
+      isAdmin: ADMIN_EMAILS.includes(email),
+    };
+
+    res.redirect('/');
+  } catch (err) {
+    console.error('Auth callback error:', err);
+    res.status(500).send('Login mislukt');
+  }
+});
+
+app.get('/auth/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/');
+});
+
+app.get('/api/auth/me', (req, res) => {
+  if (!MS_CLIENT_ID) {
+    return res.json({ authEnabled: false });
+  }
+  if (req.session?.user) {
+    return res.json({ authEnabled: true, user: req.session.user });
+  }
+  res.json({ authEnabled: true, user: null });
+});
 
 // --- Database setup ---
 const db = new Database(path.join(__dirname, 'lunch-voter.db'));
@@ -56,7 +184,6 @@ db.exec(`
 `);
 
 // --- Migrate votes table: allow multiple votes per person ---
-// SQLite can't alter constraints, so recreate the table if needed
 const tableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='votes'").get();
 if (tableInfo && tableInfo.sql.includes('UNIQUE(session_id, voter_name)') && !tableInfo.sql.includes('UNIQUE(session_id, voter_name, restaurant_id)')) {
   db.exec(`
@@ -80,17 +207,13 @@ if (tableInfo && tableInfo.sql.includes('UNIQUE(session_id, voter_name)') && !ta
 
 // --- Helpers ---
 
-// Get the Thursday week key (YYYY-Www) for a given date
 function getThursdayWeekKey(date = new Date()) {
-  // Find the Thursday of the current week
   const d = new Date(date);
-  const day = d.getDay(); // 0=Sun, 4=Thu
-  // Calculate the Thursday of this week
+  const day = d.getDay();
   const diff = 4 - day;
   const thursday = new Date(d);
   thursday.setDate(d.getDate() + diff);
   const year = thursday.getFullYear();
-  // ISO week number
   const startOfYear = new Date(year, 0, 1);
   const days = Math.floor((thursday - startOfYear) / 86400000);
   const weekNum = Math.ceil((days + startOfYear.getDay() + 1) / 7);
@@ -100,17 +223,15 @@ function getThursdayWeekKey(date = new Date()) {
 // Voting open: maandag 09:00 t/m donderdag 10:00
 function getVotingStatus() {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun, 1=Mon, 4=Thu
+  const day = now.getDay();
   const hours = now.getHours();
   const isThursday = day === 4;
 
-  // Open: mon 09:00 - thu 10:00
   let votingOpen = false;
-  if (day === 1 && hours >= 9) votingOpen = true;        // maandag vanaf 09:00
-  else if (day === 2 || day === 3) votingOpen = true;     // dinsdag & woensdag hele dag
-  else if (day === 4 && hours < 10) votingOpen = true;    // donderdag tot 10:00
+  if (day === 1 && hours >= 9) votingOpen = true;
+  else if (day === 2 || day === 3) votingOpen = true;
+  else if (day === 4 && hours < 10) votingOpen = true;
 
-  // Results shown donderdag 10:00+
   const resultsReady = isThursday && hours >= 10;
   return { votingOpen, resultsReady, isThursday, day, hours };
 }
@@ -126,8 +247,6 @@ function getOrCreateSession() {
 }
 
 // --- Fetch restaurants from Thuisbezorgd ---
-// The Thuisbezorgd website embeds restaurant data as Next.js server-side props.
-// We use curl to fetch the page (node-fetch gets blocked with 403).
 const { execSync } = require('child_process');
 
 function fetchRestaurantsSync() {
@@ -146,54 +265,31 @@ function fetchRestaurantsSync() {
 
   const data = JSON.parse(match[1]);
   const restaurantData = data.props?.appProps?.preloadedState?.discovery?.restaurantList?.restaurantData;
-
-  if (!restaurantData) {
-    throw new Error('Restaurant data structure not found in page data');
-  }
-
+  if (!restaurantData) throw new Error('Restaurant data structure not found in page data');
   return restaurantData;
 }
 
 function parseRestaurants(restaurantData) {
   const restaurants = [];
-
   for (const [id, r] of Object.entries(restaurantData)) {
     if (!r || !r.name) continue;
-
-    // Filter: only restaurants that support delivery
     if (r.isDelivery === false && r.isOpenNowForDelivery === false) continue;
-
-    // Filter: only restaurants that deliver by 13:30
-    // deliveryOpeningTimeLocal shows when delivery starts
     const deliveryTime = r.deliveryOpeningTimeLocal;
     if (deliveryTime) {
-      const timePart = deliveryTime.split('T')[1]; // e.g. "11:00:00"
+      const timePart = deliveryTime.split('T')[1];
       if (timePart) {
         const [hours, minutes] = timePart.split(':').map(Number);
-        const deliveryStart = hours * 60 + minutes;
-        // Restaurant must start delivering by 13:30 (810 minutes) to be useful for lunch
-        if (deliveryStart > 810) continue;
+        if (hours * 60 + minutes > 810) continue;
       }
     }
-
-    const cuisines = Array.isArray(r.cuisines)
-      ? r.cuisines.map(c => c.name).join(', ')
-      : '';
-
+    const cuisines = Array.isArray(r.cuisines) ? r.cuisines.map(c => c.name).join(', ') : '';
     restaurants.push({
-      id: String(r.id || id),
-      name: r.name,
-      slug: r.uniqueName || '',
-      cuisine: cuisines,
-      logo_url: r.logoUrl || '',
-      rating: r.rating?.starRating || 0,
-      rating_count: r.rating?.count || 0,
-      delivery_fee: '',
-      min_order: '',
-      is_open: r.isTemporarilyOffline ? 0 : 1,
+      id: String(r.id || id), name: r.name, slug: r.uniqueName || '',
+      cuisine: cuisines, logo_url: r.logoUrl || '',
+      rating: r.rating?.starRating || 0, rating_count: r.rating?.count || 0,
+      delivery_fee: '', min_order: '', is_open: r.isTemporarilyOffline ? 0 : 1,
     });
   }
-
   return restaurants;
 }
 
@@ -206,18 +302,15 @@ function upsertRestaurants(restaurants) {
       rating_count=@rating_count, delivery_fee=@delivery_fee, min_order=@min_order,
       is_open=@is_open, last_fetched=datetime('now')
   `);
-
-  const tx = db.transaction((items) => {
-    for (const r of items) stmt.run(r);
-  });
+  const tx = db.transaction((items) => { for (const r of items) stmt.run(r); });
   tx(restaurants);
 }
 
 // --- Seed from JSON if DB is empty ---
 const fs = require('fs');
 
-const count = db.prepare('SELECT COUNT(*) as n FROM restaurants').get().n;
-if (count === 0) {
+const restaurantCount = db.prepare('SELECT COUNT(*) as n FROM restaurants').get().n;
+if (restaurantCount === 0) {
   const seedPath = path.join(__dirname, 'seed-data.json');
   if (fs.existsSync(seedPath)) {
     const seedData = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
@@ -251,7 +344,6 @@ if (fs.existsSync(statePath)) {
 
 // --- API Routes ---
 
-// Get all restaurants (with optional sorting)
 app.get('/api/restaurants', (req, res) => {
   const allowedSort = { name: 'name', rating: 'rating', rating_count: 'rating_count' };
   const sortCol = allowedSort[req.query.sort] || 'rating';
@@ -260,7 +352,6 @@ app.get('/api/restaurants', (req, res) => {
   res.json(restaurants);
 });
 
-// Get unique cuisines for filtering
 app.get('/api/cuisines', (req, res) => {
   const rows = db.prepare("SELECT DISTINCT cuisine FROM restaurants WHERE cuisine != ''").all();
   const cuisineSet = new Set();
@@ -273,8 +364,7 @@ app.get('/api/cuisines', (req, res) => {
   res.json([...cuisineSet].sort());
 });
 
-// Refresh restaurants from Thuisbezorgd
-app.post('/api/restaurants/refresh', (req, res) => {
+app.post('/api/restaurants/refresh', requireAdmin, (req, res) => {
   try {
     const restaurantData = fetchRestaurantsSync();
     const restaurants = parseRestaurants(restaurantData);
@@ -285,15 +375,11 @@ app.post('/api/restaurants/refresh', (req, res) => {
     res.json({ message: `${restaurants.length} restaurants opgehaald en opgeslagen`, count: restaurants.length });
   } catch (err) {
     console.error('Failed to fetch restaurants:', err);
-    res.status(500).json({
-      error: `Restaurants ophalen mislukt: ${err.message}`,
-      hint: 'Je kunt ook uitvoeren: node seed.js'
-    });
+    res.status(500).json({ error: `Restaurants ophalen mislukt: ${err.message}`, hint: 'Je kunt ook uitvoeren: node seed.js' });
   }
 });
 
-// Manually add a restaurant
-app.post('/api/restaurants', (req, res) => {
+app.post('/api/restaurants', requireAdmin, (req, res) => {
   const { name, cuisine } = req.body;
   if (!name) return res.status(400).json({ error: 'Naam is verplicht' });
   const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -305,26 +391,22 @@ app.post('/api/restaurants', (req, res) => {
   res.json({ message: 'Restaurant toegevoegd', id });
 });
 
-// Delete a restaurant
-app.delete('/api/restaurants/:id', (req, res) => {
+app.delete('/api/restaurants/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM restaurants WHERE id = ?').run(req.params.id);
   res.json({ message: 'Verwijderd' });
 });
 
-// Get voting status and current session
 app.get('/api/voting/status', (req, res) => {
   const status = getVotingStatus();
   const session = getOrCreateSession();
   const weekKey = getThursdayWeekKey();
 
-  // Get all votes for this session
   const votes = db.prepare(`
     SELECT v.voter_name, v.restaurant_id, r.name as restaurant_name
     FROM votes v JOIN restaurants r ON v.restaurant_id = r.id
     WHERE v.session_id = ?
   `).all(session.id);
 
-  // Get vote tallies
   const tallies = db.prepare(`
     SELECT v.restaurant_id, r.name as restaurant_name, COUNT(*) as vote_count
     FROM votes v JOIN restaurants r ON v.restaurant_id = r.id
@@ -333,49 +415,40 @@ app.get('/api/voting/status', (req, res) => {
     ORDER BY vote_count DESC
   `).all(session.id);
 
-  // Get past winners for fairness info
-  const pastWinners = db.prepare(`
-    SELECT * FROM past_winners ORDER BY decided_at DESC LIMIT 12
-  `).all();
-
-  // Count how many times each restaurant has won
+  const pastWinners = db.prepare('SELECT * FROM past_winners ORDER BY decided_at DESC LIMIT 12').all();
   const winCounts = {};
   for (const w of pastWinners) {
     winCounts[w.restaurant_id] = (winCounts[w.restaurant_id] || 0) + 1;
   }
 
   res.json({
-    ...status,
-    weekKey,
-    session,
-    votes,
-    tallies,
+    ...status, weekKey, session, votes, tallies,
     totalVoters: new Set(votes.map(v => v.voter_name)).size,
     totalVotes: votes.length,
-    pastWinners,
-    winCounts,
+    pastWinners, winCounts,
   });
 });
 
-// Cast or toggle a vote (multiple votes per person allowed)
-app.post('/api/voting/vote', (req, res) => {
-  const { voterName, restaurantId } = req.body;
-  if (!voterName || !restaurantId) {
-    return res.status(400).json({ error: 'voterName and restaurantId are required' });
-  }
+// Cast or toggle a vote — requires authentication
+app.post('/api/voting/vote', requireAuth, (req, res) => {
+  const { restaurantId } = req.body;
+  if (!restaurantId) return res.status(400).json({ error: 'restaurantId is verplicht' });
 
   const restaurant = db.prepare('SELECT id FROM restaurants WHERE id = ?').get(restaurantId);
-  if (!restaurant) {
-    return res.status(400).json({ error: 'Restaurant niet gevonden' });
-  }
+  if (!restaurant) return res.status(400).json({ error: 'Restaurant niet gevonden' });
 
   const session = getOrCreateSession();
-  const normalizedName = voterName.trim().toLowerCase();
 
-  // Toggle: already voted on this restaurant? Remove it. Otherwise add it.
+  // Use authenticated name; fall back to body for when auth is disabled
+  const voterName = req.session?.user
+    ? req.session.user.name.trim().toLowerCase()
+    : (req.body.voterName || '').trim().toLowerCase();
+
+  if (!voterName) return res.status(400).json({ error: 'Naam is verplicht' });
+
   const existing = db.prepare(
     'SELECT * FROM votes WHERE session_id = ? AND voter_name = ? AND restaurant_id = ?'
-  ).get(session.id, normalizedName, restaurantId);
+  ).get(session.id, voterName, restaurantId);
 
   if (existing) {
     db.prepare('DELETE FROM votes WHERE id = ?').run(existing.id);
@@ -384,23 +457,18 @@ app.post('/api/voting/vote', (req, res) => {
 
   db.prepare(
     'INSERT INTO votes (session_id, voter_name, restaurant_id) VALUES (?, ?, ?)'
-  ).run(session.id, normalizedName, restaurantId);
+  ).run(session.id, voterName, restaurantId);
 
   res.json({ message: 'Stem uitgebracht!', action: 'added' });
 });
 
-// Finalize the vote (pick a winner)
-app.post('/api/voting/finalize', (req, res) => {
+app.post('/api/voting/finalize', requireAdmin, (req, res) => {
   const session = getOrCreateSession();
   const weekKey = getThursdayWeekKey();
 
-  // Check if already finalized
   const existing = db.prepare('SELECT * FROM past_winners WHERE week_key = ?').get(weekKey);
-  if (existing) {
-    return res.json({ message: 'Al afgerond', winner: existing });
-  }
+  if (existing) return res.json({ message: 'Al afgerond', winner: existing });
 
-  // Get top voted restaurant(s)
   const tallies = db.prepare(`
     SELECT v.restaurant_id, r.name as restaurant_name, COUNT(*) as vote_count
     FROM votes v JOIN restaurants r ON v.restaurant_id = r.id
@@ -409,30 +477,23 @@ app.post('/api/voting/finalize', (req, res) => {
     ORDER BY vote_count DESC
   `).all(session.id);
 
-  if (tallies.length === 0) {
-    return res.status(400).json({ error: 'Er zijn nog geen stemmen!' });
-  }
+  if (tallies.length === 0) return res.status(400).json({ error: 'Er zijn nog geen stemmen!' });
 
-  // In case of a tie, pick randomly among tied leaders
   const maxVotes = tallies[0].vote_count;
   const leaders = tallies.filter(t => t.vote_count === maxVotes);
   const winner = leaders[Math.floor(Math.random() * leaders.length)];
 
-  db.prepare(`
-    INSERT INTO past_winners (week_key, restaurant_id, restaurant_name, vote_count)
-    VALUES (?, ?, ?, ?)
-  `).run(weekKey, winner.restaurant_id, winner.restaurant_name, winner.vote_count);
+  db.prepare('INSERT INTO past_winners (week_key, restaurant_id, restaurant_name, vote_count) VALUES (?, ?, ?, ?)')
+    .run(weekKey, winner.restaurant_id, winner.restaurant_name, winner.vote_count);
 
   res.json({ message: 'Winnaar gekozen!', winner });
 });
 
-// Get history
 app.get('/api/history', (req, res) => {
   const winners = db.prepare('SELECT * FROM past_winners ORDER BY decided_at DESC LIMIT 52').all();
   res.json(winners);
 });
 
-// Export full voting state (for backup before redeploy)
 app.get('/api/state/export', (req, res) => {
   const sessions = db.prepare('SELECT * FROM voting_sessions').all();
   const votes = db.prepare('SELECT * FROM votes').all();
@@ -444,4 +505,6 @@ app.get('/api/state/export', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Lunch Voter running at http://localhost:${PORT}`);
+  if (MS_CLIENT_ID) console.log('Microsoft OAuth enabled');
+  else console.log('Auth disabled (set MS_CLIENT_ID to enable)');
 });
