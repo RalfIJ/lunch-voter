@@ -24,18 +24,6 @@
     "is_open": 1
   },
   {
-    "id": "818765",
-    "name": "Bartels Catering",
-    "slug": "bartels-catering",
-    "cuisine": "Italiaans, Lunch",
-    "logo_url": "https://res.cloudinary.com/tkwy-prod-eu/image/upload/c_pad,h_100,w_100/f_auto/q_auto/v1/static-takeaway-com/images/restaurants/nl/5RNP5ON/logo_465x320.png",
-    "rating": 4.7,
-    "rating_count": 56,
-    "delivery_fee": "",
-    "min_order": "",
-    "is_open": 0
-  },
-  {
     "id": "1219896",
     "name": "Antiek China",
     "slug": "antiek-china",
@@ -82,18 +70,6 @@
     "delivery_fee": "",
     "min_order": "",
     "is_open": 1
-  },
-  {
-    "id": "4143128",
-    "name": "Switi Exotische Broodjeszaak",
-    "slug": "switi-exotische-broodjeszaak",
-    "cuisine": "Snacks, Surinaams, Broodjes",
-    "logo_url": "https://res.cloudinary.com/tkwy-prod-eu/image/upload/c_pad,h_100,w_100/f_auto/q_auto/v1/static-takeaway-com/images/restaurants/nl/OQ3RNON1/logo_465x320.png",
-    "rating": 4.6,
-    "rating_count": 273,
-    "delivery_fee": "",
-    "min_order": "",
-    "is_open": 0
   },
   {
     "id": "8532250",
@@ -166,18 +142,6 @@
     "delivery_fee": "",
     "min_order": "",
     "is_open": 1
-  },
-  {
-    "id": "9061788",
-    "name": "GG DÖNER",
-    "slug": "gg-doner",
-    "cuisine": "Turkse pizza, Döner, Kapsalon",
-    "logo_url": "https://res.cloudinary.com/tkwy-prod-eu/image/upload/c_pad,h_100,w_100/f_auto/q_auto/v1/static-takeaway-com/images/restaurants/nl/OP35Q17N/logo_465x320.png",
-    "rating": 4.3,
-    "rating_count": 463,
-    "delivery_fee": "",
-    "min_order": "",
-    "is_open": 0
   },
   {
     "id": "9088411",
