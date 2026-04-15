@@ -1,6 +1,5 @@
 const express = require('express');
 const session = require('express-session');
-const Database = require('better-sqlite3');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -136,7 +135,19 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // --- Database setup ---
-const db = new Database(path.join(__dirname, 'lunch-voter.db'));
+const DB_PROXY_URL = process.env.DB_PROXY_URL || '';
+const DB_PROXY_KEY = process.env.DB_PROXY_KEY || '';
+
+let db;
+if (DB_PROXY_URL) {
+  const { RemoteDatabase } = require('./db-client');
+  db = new RemoteDatabase(DB_PROXY_URL, DB_PROXY_KEY);
+  console.log(`Using remote DB: ${DB_PROXY_URL}`);
+} else {
+  const Database = require('better-sqlite3');
+  db = new Database(path.join(__dirname, 'lunch-voter.db'));
+  console.log('Using local SQLite');
+}
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -307,39 +318,40 @@ function upsertRestaurants(restaurants) {
   tx(restaurants);
 }
 
-// --- Seed from JSON if DB is empty ---
+// --- Seed from JSON if DB is empty (only needed for ephemeral storage like Render) ---
 const fs = require('fs');
 
-const restaurantCount = db.prepare('SELECT COUNT(*) as n FROM restaurants').get().n;
-if (restaurantCount === 0) {
-  const seedPath = path.join(__dirname, 'seed-data.json');
-  if (fs.existsSync(seedPath)) {
-    const seedData = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
-    upsertRestaurants(seedData);
-    console.log(`Seeded ${seedData.length} restaurants from seed-data.json`);
+if (!DB_PROXY_URL) {
+  const restaurantCount = db.prepare('SELECT COUNT(*) as n FROM restaurants').get().n;
+  if (restaurantCount === 0) {
+    const seedPath = path.join(__dirname, 'seed-data.json');
+    if (fs.existsSync(seedPath)) {
+      const seedData = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
+      upsertRestaurants(seedData);
+      console.log(`Seeded ${seedData.length} restaurants from seed-data.json`);
+    }
   }
-}
 
-// Restore voting state if available
-const statePath = path.join(__dirname, 'seed-state.json');
-if (fs.existsSync(statePath)) {
-  const voteCount = db.prepare('SELECT COUNT(*) as n FROM votes').get().n;
-  const winnerCount = db.prepare('SELECT COUNT(*) as n FROM past_winners').get().n;
-  if (voteCount === 0 && winnerCount === 0) {
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    const tx = db.transaction(() => {
-      for (const s of state.sessions || []) {
-        db.prepare('INSERT OR IGNORE INTO voting_sessions (id, week_key, created_at, closed) VALUES (?, ?, ?, ?)').run(s.id, s.week_key, s.created_at, s.closed);
-      }
-      for (const v of state.votes || []) {
-        db.prepare('INSERT OR IGNORE INTO votes (id, session_id, voter_name, restaurant_id, voted_at) VALUES (?, ?, ?, ?, ?)').run(v.id, v.session_id, v.voter_name, v.restaurant_id, v.voted_at);
-      }
-      for (const w of state.past_winners || []) {
-        db.prepare('INSERT OR IGNORE INTO past_winners (id, week_key, restaurant_id, restaurant_name, vote_count, decided_at) VALUES (?, ?, ?, ?, ?, ?)').run(w.id, w.week_key, w.restaurant_id, w.restaurant_name, w.vote_count, w.decided_at);
-      }
-    });
-    tx();
-    console.log(`Restored state: ${(state.sessions||[]).length} sessions, ${(state.votes||[]).length} votes, ${(state.past_winners||[]).length} winners`);
+  const statePath = path.join(__dirname, 'seed-state.json');
+  if (fs.existsSync(statePath)) {
+    const voteCount = db.prepare('SELECT COUNT(*) as n FROM votes').get().n;
+    const winnerCount = db.prepare('SELECT COUNT(*) as n FROM past_winners').get().n;
+    if (voteCount === 0 && winnerCount === 0) {
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      const tx = db.transaction(() => {
+        for (const s of state.sessions || []) {
+          db.prepare('INSERT OR IGNORE INTO voting_sessions (id, week_key, created_at, closed) VALUES (?, ?, ?, ?)').run(s.id, s.week_key, s.created_at, s.closed);
+        }
+        for (const v of state.votes || []) {
+          db.prepare('INSERT OR IGNORE INTO votes (id, session_id, voter_name, restaurant_id, voted_at) VALUES (?, ?, ?, ?, ?)').run(v.id, v.session_id, v.voter_name, v.restaurant_id, v.voted_at);
+        }
+        for (const w of state.past_winners || []) {
+          db.prepare('INSERT OR IGNORE INTO past_winners (id, week_key, restaurant_id, restaurant_name, vote_count, decided_at) VALUES (?, ?, ?, ?, ?, ?)').run(w.id, w.week_key, w.restaurant_id, w.restaurant_name, w.vote_count, w.decided_at);
+        }
+      });
+      tx();
+      console.log(`Restored state: ${(state.sessions||[]).length} sessions, ${(state.votes||[]).length} votes, ${(state.past_winners||[]).length} winners`);
+    }
   }
 }
 

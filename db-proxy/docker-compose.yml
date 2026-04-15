@@ -1,0 +1,13 @@
+services:
+  db-proxy:
+    build: .
+    container_name: lunch-voter-db
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - API_KEY=${API_KEY}
+      - DB_PATH=/app/data/lunch-voter.db
+      - PORT=3001
+    volumes:
+      - ./data:/app/data
