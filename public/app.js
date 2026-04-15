@@ -84,32 +84,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Login form
-  document.getElementById('login-form')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const name = document.getElementById('login-name').value.trim();
-    const pin = document.getElementById('login-pin').value;
-    const errorEl = document.getElementById('login-error');
-    errorEl.textContent = '';
-
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, pin }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        errorEl.textContent = data.error;
-        return;
-      }
-      await checkAuth();
-      loadVotingStatus();
-    } catch (err) {
-      errorEl.textContent = 'Inloggen mislukt. Probeer het opnieuw.';
-    }
-  });
-
   // Name input (for when auth is disabled)
   const voterInput = document.getElementById('voter-name');
   if (voterInput) {
@@ -147,8 +121,12 @@ function renderAuthUI() {
   if (authState.authEnabled) {
     if (authState.user) {
       voterName = authState.user.name;
+      const pic = authState.user.picture
+        ? `<img src="${authState.user.picture}" alt="" class="user-avatar" referrerpolicy="no-referrer">`
+        : '';
       voteHeader.innerHTML = `
         <div class="voter-input">
+          ${pic}
           <span class="user-badge">Ingelogd als <strong>${authState.user.name}</strong>${authState.user.isAdmin ? ' <span class="admin-tag">beheerder</span>' : ''}</span>
           <a href="/auth/logout" class="btn-logout">Uitloggen</a>
         </div>
@@ -334,7 +312,7 @@ async function refreshRestaurants() {
 
 async function castVote(restaurantId) {
   if (authState.authEnabled && !authState.user) {
-    alert('Log eerst in om te stemmen.');
+    window.location.href = '/auth/login';
     return;
   }
   if (!authState.authEnabled && !voterName) {

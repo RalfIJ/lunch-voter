@@ -27,15 +27,15 @@ if (process.env.NODE_ENV === 'production') {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Team PIN auth ---
+// --- Google OAuth2 config ---
 const IS_DEV = process.env.NODE_ENV !== 'production';
-const TEAM_PIN = process.env.TEAM_PIN || '';
-const ADMIN_PIN = process.env.ADMIN_PIN || '';
-const TEAM_MEMBERS = (process.env.TEAM_MEMBERS || '')
-  .split(',').map(n => n.trim().toLowerCase()).filter(Boolean);
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/auth/callback';
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
 
 function authEnabled() {
-  return !IS_DEV || TEAM_PIN;
+  return !IS_DEV || !!GOOGLE_CLIENT_ID;
 }
 
 // --- Auth middleware ---
@@ -53,30 +53,71 @@ function requireAdmin(req, res, next) {
 }
 
 // --- Auth routes ---
-app.post('/api/auth/login', (req, res) => {
-  const { name, pin } = req.body;
-  if (!name || !pin) return res.status(400).json({ error: 'Naam en PIN zijn verplicht' });
+app.get('/auth/login', (req, res) => {
+  if (!GOOGLE_CLIENT_ID) return res.redirect('/');
+  const state = crypto.randomBytes(16).toString('hex');
+  req.session.authState = state;
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    access_type: 'online',
+    prompt: 'select_account',
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
 
-  const normalizedName = name.trim().toLowerCase();
+app.get('/auth/callback', async (req, res) => {
+  if (!GOOGLE_CLIENT_ID) return res.redirect('/');
+  const { code, state } = req.query;
 
-  // Check admin login
-  if (ADMIN_PIN && pin === ADMIN_PIN) {
-    req.session.user = { name: normalizedName, isAdmin: true };
-    return res.json({ user: req.session.user });
+  if (!code || state !== req.session.authState) {
+    return res.status(400).send('Ongeldige login poging');
   }
+  delete req.session.authState;
 
-  // Check team login
-  if (TEAM_PIN && pin !== TEAM_PIN) {
-    return res.status(401).json({ error: 'Onjuiste PIN' });
+  try {
+    // Exchange code for token
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        code,
+        redirect_uri: GOOGLE_REDIRECT_URI,
+        grant_type: 'authorization_code',
+      }),
+    });
+    const tokens = await tokenRes.json();
+    if (tokens.error) {
+      console.error('Google token error:', tokens);
+      return res.status(400).send('Login mislukt');
+    }
+
+    // Get user info from Google
+    const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    const profile = await userRes.json();
+
+    const email = (profile.email || '').toLowerCase();
+    const displayName = profile.given_name || profile.name || email.split('@')[0];
+
+    req.session.user = {
+      name: displayName,
+      email,
+      picture: profile.picture || '',
+      isAdmin: ADMIN_EMAILS.includes(email),
+    };
+
+    res.redirect('/');
+  } catch (err) {
+    console.error('Auth callback error:', err);
+    res.status(500).send('Login mislukt');
   }
-
-  // Check whitelist (if configured)
-  if (TEAM_MEMBERS.length > 0 && !TEAM_MEMBERS.includes(normalizedName)) {
-    return res.status(403).json({ error: 'Naam niet gevonden in het team. Vraag een beheerder om je toe te voegen.' });
-  }
-
-  req.session.user = { name: normalizedName, isAdmin: false };
-  res.json({ user: req.session.user });
 });
 
 app.get('/auth/logout', (req, res) => {
@@ -465,6 +506,6 @@ app.get('/api/state/export', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Lunch Voter running at http://localhost:${PORT}`);
-  if (authEnabled()) console.log(`Auth enabled (PIN) | ${TEAM_MEMBERS.length} teamleden`);
+  if (authEnabled()) console.log('Google OAuth enabled');
   else console.log('Auth disabled (development mode)');
 });
