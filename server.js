@@ -38,14 +38,16 @@ const MS_AUTH_URL = `https://login.microsoftonline.com/${MS_TENANT}/oauth2/v2.0/
 const MS_TOKEN_URL = `https://login.microsoftonline.com/${MS_TENANT}/oauth2/v2.0/token`;
 
 // --- Auth middleware ---
+const IS_DEV = process.env.NODE_ENV !== 'production';
+
 function requireAuth(req, res, next) {
-  if (!MS_CLIENT_ID) return next(); // Auth disabled if no client ID configured
+  if (IS_DEV && !MS_CLIENT_ID) return next(); // Only skip auth in development
   if (req.session?.user) return next();
   res.status(401).json({ error: 'Niet ingelogd' });
 }
 
 function requireAdmin(req, res, next) {
-  if (!MS_CLIENT_ID) return next();
+  if (IS_DEV && !MS_CLIENT_ID) return next(); // Only skip auth in development
   if (!req.session?.user) return res.status(401).json({ error: 'Niet ingelogd' });
   if (!req.session.user.isAdmin) return res.status(403).json({ error: 'Geen beheerrechten' });
   next();
@@ -125,7 +127,8 @@ app.get('/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', (req, res) => {
-  if (!MS_CLIENT_ID) {
+  const authEnabled = MS_CLIENT_ID || !IS_DEV; // Always enabled in production
+  if (!authEnabled) {
     return res.json({ authEnabled: false });
   }
   if (req.session?.user) {
