@@ -1,5 +1,6 @@
-FROM node:22-alpine
+FROM ghcr.io/puppeteer/puppeteer:24.6.0
 WORKDIR /app
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 COPY package.json ./
 RUN npm install --omit=dev
 COPY server.js ./

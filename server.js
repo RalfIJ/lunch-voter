@@ -377,18 +377,34 @@ app.get('/api/cuisines', (req, res) => {
   res.json([...cuisineSet].sort());
 });
 
-app.post('/api/restaurants/refresh', requireAdmin, (req, res) => {
+app.post('/api/restaurants/refresh', requireAdmin, async (req, res) => {
+  // If using remote DB proxy, use its Puppeteer scraper
+  if (DB_PROXY_URL) {
+    try {
+      const scrapeRes = await fetch(`${DB_PROXY_URL}/api/db/scrape-restaurants`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DB_PROXY_KEY}` },
+      });
+      const data = await scrapeRes.json();
+      if (!scrapeRes.ok) return res.status(scrapeRes.status).json(data);
+      return res.json(data);
+    } catch (err) {
+      return res.status(500).json({ error: `NAS scraper niet bereikbaar: ${err.message}` });
+    }
+  }
+
+  // Fallback: local curl (only works on dev machines)
   try {
     const restaurantData = fetchRestaurantsSync();
     const restaurants = parseRestaurants(restaurantData);
     if (restaurants.length === 0) {
-      return res.status(400).json({ error: 'Geen restaurants gevonden. De paginastructuur is mogelijk gewijzigd.' });
+      return res.status(400).json({ error: 'Geen restaurants gevonden.' });
     }
     upsertRestaurants(restaurants);
     res.json({ message: `${restaurants.length} restaurants opgehaald en opgeslagen`, count: restaurants.length });
   } catch (err) {
     console.error('Failed to fetch restaurants:', err);
-    res.status(500).json({ error: `Restaurants ophalen mislukt: ${err.message}`, hint: 'Je kunt ook uitvoeren: node seed.js' });
+    res.status(500).json({ error: `Restaurants ophalen mislukt: ${err.message}` });
   }
 });
 
