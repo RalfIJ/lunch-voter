@@ -185,6 +185,17 @@ function upsertRestaurants(restaurants) {
   tx(restaurants);
 }
 
+// --- Seed from JSON if DB is empty ---
+const count = db.prepare('SELECT COUNT(*) as n FROM restaurants').get().n;
+if (count === 0) {
+  const seedPath = path.join(__dirname, 'seed-data.json');
+  if (require('fs').existsSync(seedPath)) {
+    const seedData = JSON.parse(require('fs').readFileSync(seedPath, 'utf-8'));
+    upsertRestaurants(seedData);
+    console.log(`Seeded ${seedData.length} restaurants from seed-data.json`);
+  }
+}
+
 // --- API Routes ---
 
 // Get all restaurants (with optional sorting)
