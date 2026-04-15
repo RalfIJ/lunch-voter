@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lunch Stemmer - Thuisbezorgd</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="header-content">
+      <h1>Lunch Stemmer</h1>
+      <p class="subtitle">Thuisbezorgd 1812RB &middot; Elke donderdag</p>
+    </div>
+    <div id="voting-status" class="status-badge"></div>
+  </header>
+
+  <nav>
+    <button class="nav-btn active" data-tab="vote">Stemmen</button>
+    <button class="nav-btn" data-tab="results">Resultaten</button>
+    <button class="nav-btn" data-tab="history">Geschiedenis</button>
+    <button class="nav-btn" data-tab="admin">Beheer</button>
+  </nav>
+
+  <main>
+    <!-- STEMMEN TAB -->
+    <section id="tab-vote" class="tab-content active">
+      <div class="vote-header">
+        <div class="voter-input">
+          <label for="voter-name">Jouw naam:</label>
+          <input type="text" id="voter-name" placeholder="bijv. Jan" autocomplete="given-name">
+        </div>
+        <div id="week-info" class="week-info"></div>
+      </div>
+
+      <div id="current-vote" class="current-vote" style="display:none">
+        <span>Jouw huidige stem: <strong id="current-vote-name"></strong></span>
+        <span class="vote-hint">(klik op een ander restaurant om te wijzigen)</span>
+      </div>
+
+      <div class="filter-sort-bar">
+        <div class="filter-group">
+          <div class="filter-item">
+            <label for="filter-cuisine">Keuken</label>
+            <select id="filter-cuisine">
+              <option value="">Alle keukens</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label for="filter-rating">Min. beoordeling</label>
+            <select id="filter-rating">
+              <option value="0">Alle</option>
+              <option value="3">3+</option>
+              <option value="3.5">3.5+</option>
+              <option value="4">4+</option>
+              <option value="4.5">4.5+</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label class="toggle-label">
+              <input type="checkbox" id="filter-open" checked>
+              <span>Alleen open</span>
+            </label>
+          </div>
+        </div>
+        <div class="sort-group">
+          <div class="filter-item">
+            <label for="sort-by">Sorteren</label>
+            <select id="sort-by">
+              <option value="rating-desc">Beoordeling (hoog-laag)</option>
+              <option value="rating-asc">Beoordeling (laag-hoog)</option>
+              <option value="name-asc">Naam (A-Z)</option>
+              <option value="name-desc">Naam (Z-A)</option>
+              <option value="votes-desc">Stemmen (meest)</option>
+              <option value="votes-asc">Stemmen (minst)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div id="restaurant-count" class="restaurant-count"></div>
+      <div id="restaurant-list" class="restaurant-grid">
+        <div class="loading">Restaurants laden...</div>
+      </div>
+    </section>
+
+    <!-- RESULTATEN TAB -->
+    <section id="tab-results" class="tab-content">
+      <h2>Resultaten deze week</h2>
+      <div id="results-container">
+        <div class="loading">Resultaten laden...</div>
+      </div>
+      <div id="winner-section" style="display:none">
+        <div id="winner-display" class="winner-card"></div>
+      </div>
+      <div id="finalize-section" style="display:none">
+        <button id="finalize-btn" class="btn-finalize">Kies de winnaar!</button>
+      </div>
+    </section>
+
+    <!-- GESCHIEDENIS TAB -->
+    <section id="tab-history" class="tab-content">
+      <h2>Eerdere winnaars</h2>
+      <div id="history-list" class="history-list">
+        <div class="loading">Geschiedenis laden...</div>
+      </div>
+    </section>
+
+    <!-- BEHEER TAB -->
+    <section id="tab-admin" class="tab-content">
+      <h2>Restaurants beheren</h2>
+
+      <div class="admin-actions">
+        <button id="refresh-btn" class="btn-primary">
+          Ophalen van Thuisbezorgd
+        </button>
+        <div id="refresh-status" class="refresh-status"></div>
+      </div>
+
+      <div class="admin-add">
+        <h3>Restaurant handmatig toevoegen</h3>
+        <form id="add-form">
+          <input type="text" id="add-name" placeholder="Restaurantnaam" required>
+          <input type="text" id="add-cuisine" placeholder="Keuken (bijv. Pizza, Sushi)">
+          <button type="submit" class="btn-secondary">Toevoegen</button>
+        </form>
+      </div>
+
+      <div id="admin-restaurant-list" class="admin-list"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Bestel via <a href="https://www.thuisbezorgd.nl/bestellen/eten/1812" target="_blank">thuisbezorgd.nl</a> &middot; Postcode 1812RB &middot; Bezorging 11:00-13:30</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

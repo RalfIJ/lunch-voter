@@ -1,0 +1,5 @@
+node_modules/
+lunch-voter.db
+lunch-voter.db-shm
+lunch-voter.db-wal
+.env
