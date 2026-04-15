@@ -41,7 +41,7 @@ db.exec(`
     voted_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES voting_sessions(id),
     FOREIGN KEY (restaurant_id) REFERENCES restaurants(id),
-    UNIQUE(session_id, voter_name)
+    UNIQUE(session_id, voter_name, restaurant_id)
   );
 
   CREATE TABLE IF NOT EXISTS past_winners (
@@ -54,6 +54,29 @@ db.exec(`
     FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
   );
 `);
+
+// --- Migrate votes table: allow multiple votes per person ---
+// SQLite can't alter constraints, so recreate the table if needed
+const tableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='votes'").get();
+if (tableInfo && tableInfo.sql.includes('UNIQUE(session_id, voter_name)') && !tableInfo.sql.includes('UNIQUE(session_id, voter_name, restaurant_id)')) {
+  db.exec(`
+    CREATE TABLE votes_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      voter_name TEXT NOT NULL,
+      restaurant_id TEXT NOT NULL,
+      voted_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (session_id) REFERENCES voting_sessions(id),
+      FOREIGN KEY (restaurant_id) REFERENCES restaurants(id),
+      UNIQUE(session_id, voter_name, restaurant_id)
+    );
+    INSERT INTO votes_new (id, session_id, voter_name, restaurant_id, voted_at)
+      SELECT id, session_id, voter_name, restaurant_id, voted_at FROM votes;
+    DROP TABLE votes;
+    ALTER TABLE votes_new RENAME TO votes;
+  `);
+  console.log('Migrated votes table: multiple votes per person now allowed');
+}
 
 // --- Helpers ---
 
@@ -74,16 +97,21 @@ function getThursdayWeekKey(date = new Date()) {
   return `${year}-W${String(weekNum).padStart(2, '0')}`;
 }
 
-// Check if today is voting day (Thursday) or if voting is open (Mon-Thu)
+// Voting open: maandag 09:00 t/m donderdag 10:00
 function getVotingStatus() {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun, 4=Thu
+  const day = now.getDay(); // 0=Sun, 1=Mon, 4=Thu
   const hours = now.getHours();
   const isThursday = day === 4;
-  // Voting is open Mon-Thu until Thursday 11:00
-  const votingOpen = day >= 1 && day <= 4 && !(isThursday && hours >= 11);
-  // Results shown Thursday 11:00+
-  const resultsReady = isThursday && hours >= 11;
+
+  // Open: mon 09:00 - thu 10:00
+  let votingOpen = false;
+  if (day === 1 && hours >= 9) votingOpen = true;        // maandag vanaf 09:00
+  else if (day === 2 || day === 3) votingOpen = true;     // dinsdag & woensdag hele dag
+  else if (day === 4 && hours < 10) votingOpen = true;    // donderdag tot 10:00
+
+  // Results shown donderdag 10:00+
+  const resultsReady = isThursday && hours >= 10;
   return { votingOpen, resultsReady, isThursday, day, hours };
 }
 
@@ -322,20 +350,20 @@ app.get('/api/voting/status', (req, res) => {
     session,
     votes,
     tallies,
-    totalVoters: votes.length,
+    totalVoters: new Set(votes.map(v => v.voter_name)).size,
+    totalVotes: votes.length,
     pastWinners,
     winCounts,
   });
 });
 
-// Cast a vote
+// Cast or toggle a vote (multiple votes per person allowed)
 app.post('/api/voting/vote', (req, res) => {
   const { voterName, restaurantId } = req.body;
   if (!voterName || !restaurantId) {
     return res.status(400).json({ error: 'voterName and restaurantId are required' });
   }
 
-  // Check restaurant exists
   const restaurant = db.prepare('SELECT id FROM restaurants WHERE id = ?').get(restaurantId);
   if (!restaurant) {
     return res.status(400).json({ error: 'Restaurant niet gevonden' });
@@ -344,24 +372,21 @@ app.post('/api/voting/vote', (req, res) => {
   const session = getOrCreateSession();
   const normalizedName = voterName.trim().toLowerCase();
 
-  // Check if this person already voted
+  // Toggle: already voted on this restaurant? Remove it. Otherwise add it.
   const existing = db.prepare(
-    'SELECT * FROM votes WHERE session_id = ? AND voter_name = ?'
-  ).get(session.id, normalizedName);
+    'SELECT * FROM votes WHERE session_id = ? AND voter_name = ? AND restaurant_id = ?'
+  ).get(session.id, normalizedName, restaurantId);
 
   if (existing) {
-    // Update their vote
-    db.prepare(
-      'UPDATE votes SET restaurant_id = ?, voted_at = datetime(\'now\') WHERE id = ?'
-    ).run(restaurantId, existing.id);
-    return res.json({ message: 'Stem gewijzigd!' });
+    db.prepare('DELETE FROM votes WHERE id = ?').run(existing.id);
+    return res.json({ message: 'Stem ingetrokken', action: 'removed' });
   }
 
   db.prepare(
     'INSERT INTO votes (session_id, voter_name, restaurant_id) VALUES (?, ?, ?)'
   ).run(session.id, normalizedName, restaurantId);
 
-  res.json({ message: 'Stem uitgebracht!' });
+  res.json({ message: 'Stem uitgebracht!', action: 'added' });
 });
 
 // Finalize the vote (pick a winner)

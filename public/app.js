@@ -163,7 +163,7 @@ async function loadResults() {
 
   let html = '';
   for (const t of votingStatus.tallies) {
-    const pct = Math.round((t.vote_count / votingStatus.totalVoters) * 100);
+    const pct = Math.round((t.vote_count / votingStatus.totalVotes) * 100);
     html += `
       <div class="result-bar">
         <div class="bar-name">${t.restaurant_name}</div>
@@ -301,7 +301,7 @@ function renderStatus() {
   }
 
   if (weekEl) {
-    weekEl.textContent = `Week: ${votingStatus.weekKey || '...'} | Stemmers: ${votingStatus.totalVoters || 0}`;
+    weekEl.textContent = `Week: ${votingStatus.weekKey || '...'} | ${votingStatus.totalVoters || 0} stemmers, ${votingStatus.totalVotes || 0} stemmen`;
   }
 }
 
@@ -320,14 +320,15 @@ function renderRestaurants() {
     return;
   }
 
-  // Find current user's vote
-  const myVote = votingStatus.votes?.find(v => v.voter_name === voterName.toLowerCase());
+  // Find current user's votes (multiple allowed)
+  const myVotes = votingStatus.votes?.filter(v => v.voter_name === voterName.toLowerCase()) || [];
+  const myVotedIds = new Set(myVotes.map(v => v.restaurant_id));
   const currentVoteEl = document.getElementById('current-vote');
   const currentVoteNameEl = document.getElementById('current-vote-name');
 
-  if (myVote) {
+  if (myVotes.length > 0) {
     currentVoteEl.style.display = 'flex';
-    currentVoteNameEl.textContent = myVote.restaurant_name;
+    currentVoteNameEl.textContent = myVotes.map(v => v.restaurant_name).join(', ');
   } else {
     currentVoteEl.style.display = 'none';
   }
@@ -377,7 +378,7 @@ function renderRestaurants() {
   }
 
   container.innerHTML = filtered.map((r, index) => {
-    const isVoted = myVote && myVote.restaurant_id === r.id;
+    const isVoted = myVotedIds.has(r.id);
     const voteCount = voteCounts[r.id] || 0;
     const recentWins = votingStatus.winCounts?.[r.id] || 0;
     const initial = r.name.charAt(0).toUpperCase();
