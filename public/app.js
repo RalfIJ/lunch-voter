@@ -347,6 +347,70 @@ async function deleteRestaurant(id) {
   loadAdminList();
 }
 
+// --- Countdown ---
+let countdownInterval = null;
+
+function getNextDeadline() {
+  // Deadline is always Thursday 10:00 of the current week
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun, 4=Thu
+  const d = new Date(now);
+  d.setDate(now.getDate() + (4 - day));
+  d.setHours(10, 0, 0, 0);
+  // If we're past Thursday 10:00, next deadline is next week's Thursday
+  if (d <= now) d.setDate(d.getDate() + 7);
+  return d;
+}
+
+function getNextOpen() {
+  // Next opening is Monday 09:00
+  const now = new Date();
+  const day = now.getDay();
+  const d = new Date(now);
+  // Days until next Monday
+  const daysUntilMon = day === 0 ? 1 : (8 - day);
+  d.setDate(now.getDate() + daysUntilMon);
+  d.setHours(9, 0, 0, 0);
+  return d;
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return '0:00:00';
+  const totalSec = Math.floor(ms / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (days > 0) return `${days}d ${hours}u ${String(mins).padStart(2, '0')}m`;
+  return `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function startCountdown() {
+  if (countdownInterval) clearInterval(countdownInterval);
+  countdownInterval = setInterval(updateCountdown, 1000);
+  updateCountdown();
+}
+
+function updateCountdown() {
+  const el = document.getElementById('countdown');
+  if (!el) return;
+  const now = new Date();
+
+  if (votingStatus.votingOpen) {
+    const deadline = getNextDeadline();
+    const remaining = deadline - now;
+    el.textContent = `Sluit over ${formatCountdown(remaining)}`;
+    el.style.display = 'block';
+  } else if (votingStatus.resultsReady) {
+    el.style.display = 'none';
+  } else {
+    const nextOpen = getNextOpen();
+    const remaining = nextOpen - now;
+    el.textContent = `Opent over ${formatCountdown(remaining)}`;
+    el.style.display = 'block';
+  }
+}
+
 // --- Rendering ---
 function renderStatus() {
   const el = document.getElementById('voting-status');
@@ -368,6 +432,8 @@ function renderStatus() {
   if (weekEl) {
     weekEl.textContent = `Week: ${votingStatus.weekKey || '...'} | ${votingStatus.totalVoters || 0} stemmers, ${votingStatus.totalVotes || 0} stemmen`;
   }
+
+  startCountdown();
 }
 
 function renderRestaurants() {
