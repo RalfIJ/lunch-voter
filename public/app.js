@@ -240,29 +240,270 @@ async function loadResults() {
   container.innerHTML = html;
 }
 
+let historyData = [];
+let expandedWeekKey = null;
+let detailCache = {};
+
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function formatAvg(avg) {
+  if (avg == null) return null;
+  return (Math.round(avg * 10) / 10).toFixed(1);
+}
+
+function renderStarsReadonly(rating) {
+  const r = Math.round(rating);
+  let html = '<span class="stars-readonly" aria-label="' + r + ' van 10">';
+  for (let i = 1; i <= 10; i++) {
+    html += `<span class="star ${i <= r ? 'filled' : ''}">${i <= r ? '★' : '☆'}</span>`;
+  }
+  html += '</span>';
+  return html;
+}
+
+function identityQuery() {
+  if (!authState.authEnabled && voterName) {
+    return '?voterName=' + encodeURIComponent(voterName);
+  }
+  return '';
+}
+
 async function loadHistory() {
   try {
-    const res = await fetch('/api/history');
-    const history = await res.json();
+    const res = await fetch('/api/history' + identityQuery());
+    historyData = await res.json();
     const container = document.getElementById('history-list');
 
-    if (history.length === 0) {
+    if (historyData.length === 0) {
       container.innerHTML = '<div class="empty-state"><h3>Nog geen geschiedenis</h3><p>Winnaars verschijnen hier na elke donderdagstemming.</p></div>';
       return;
     }
 
-    container.innerHTML = history.map(h => `
-      <div class="history-item">
-        <div>
-          <div class="winner-name">${h.restaurant_name}</div>
-          <div class="week">${h.week_key} - ${new Date(h.decided_at).toLocaleDateString('nl-NL')}</div>
-        </div>
-        <div class="votes-info">${h.vote_count} stem${h.vote_count > 1 ? 'men' : ''}</div>
-      </div>
-    `).join('');
+    renderHistoryList();
   } catch (err) {
     document.getElementById('history-list').innerHTML = '<div class="loading">Geschiedenis laden mislukt</div>';
   }
+}
+
+function renderHistoryList() {
+  const container = document.getElementById('history-list');
+  container.innerHTML = historyData.map(h => {
+    const avgStr = formatAvg(h.avg_rating);
+    const expanded = expandedWeekKey === h.week_key;
+    const ratingSummary = avgStr
+      ? `<span class="history-rating"><span class="history-rating-star">★</span> ${avgStr}<span class="history-rating-max">/10</span> <span class="history-rating-count">(${h.rating_count})</span></span>`
+      : '<span class="history-rating history-rating-empty">Nog geen beoordelingen</span>';
+    const myRatingBadge = h.my_rating != null
+      ? `<span class="my-rating-badge">Jij: ${h.my_rating}/10</span>`
+      : '';
+
+    return `
+      <div class="history-item ${expanded ? 'expanded' : ''}" data-week="${escapeHtml(h.week_key)}">
+        <div class="history-summary" onclick="toggleHistoryItem('${escapeHtml(h.week_key)}')">
+          <div class="history-main">
+            <div class="winner-name">${escapeHtml(h.restaurant_name)}</div>
+            <div class="week">${escapeHtml(h.week_key)} &middot; ${new Date(h.decided_at).toLocaleDateString('nl-NL')} &middot; ${h.vote_count} stem${h.vote_count > 1 ? 'men' : ''}</div>
+          </div>
+          <div class="history-meta">
+            ${ratingSummary}
+            ${myRatingBadge}
+            <span class="history-toggle">${expanded ? '▲' : '▼'}</span>
+          </div>
+        </div>
+        ${expanded ? `<div class="history-detail" id="history-detail-${escapeHtml(h.week_key)}"><div class="loading">Beoordelingen laden...</div></div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+async function toggleHistoryItem(weekKey) {
+  if (expandedWeekKey === weekKey) {
+    expandedWeekKey = null;
+    renderHistoryList();
+    return;
+  }
+  expandedWeekKey = weekKey;
+  renderHistoryList();
+  await loadRatingDetail(weekKey);
+}
+
+async function loadRatingDetail(weekKey) {
+  try {
+    const res = await fetch(`/api/ratings/${encodeURIComponent(weekKey)}` + identityQuery());
+    const data = await res.json();
+    detailCache[weekKey] = data;
+    renderRatingDetail(weekKey);
+  } catch (err) {
+    const el = document.getElementById(`history-detail-${weekKey}`);
+    if (el) el.innerHTML = '<div class="loading">Beoordelingen laden mislukt</div>';
+  }
+}
+
+function renderRatingDetail(weekKey) {
+  const el = document.getElementById(`history-detail-${weekKey}`);
+  if (!el) return;
+  const data = detailCache[weekKey];
+  if (!data) return;
+
+  const canRate = !authState.authEnabled || !!authState.user;
+  const mine = data.mine;
+  const myRating = mine ? mine.rating : null;
+  const myComment = mine ? (mine.comment || '') : '';
+
+  const others = data.ratings.filter(r => !r.is_mine);
+
+  let html = '';
+
+  // Aggregate
+  if (data.count > 0) {
+    html += `
+      <div class="rating-aggregate">
+        <div class="agg-big">${formatAvg(data.avg)}<span class="agg-max">/10</span></div>
+        ${renderStarsReadonly(data.avg)}
+        <div class="agg-count">${data.count} beoordeling${data.count === 1 ? '' : 'en'}</div>
+      </div>
+    `;
+  }
+
+  // Rating widget
+  if (canRate) {
+    html += `
+      <div class="rating-widget-wrap">
+        <div class="rating-widget-label">${mine ? 'Jouw beoordeling' : 'Laat je beoordeling achter'}</div>
+        <div class="rating-widget" data-week="${escapeHtml(weekKey)}" data-rating="${myRating != null ? myRating : ''}">
+          <button type="button" class="rating-zero ${myRating === 0 ? 'active' : ''}" onclick="setRating('${escapeHtml(weekKey)}', 0)" title="0 — slecht">0</button>
+          <div class="rating-stars">
+            ${[1,2,3,4,5,6,7,8,9,10].map(n =>
+              `<button type="button" class="rating-star ${myRating != null && n <= myRating ? 'active' : ''}" data-value="${n}" onclick="setRating('${escapeHtml(weekKey)}', ${n})">${myRating != null && n <= myRating ? '★' : '☆'}</button>`
+            ).join('')}
+          </div>
+          <span class="rating-score">${myRating != null ? myRating : '—'}<span class="rating-score-max">/10</span></span>
+        </div>
+        <textarea class="rating-comment" id="rating-comment-${escapeHtml(weekKey)}" placeholder="Hoe was het? (optioneel)" maxlength="1000">${escapeHtml(myComment)}</textarea>
+        <div class="rating-actions">
+          <button type="button" class="btn-primary rating-save" onclick="saveRating('${escapeHtml(weekKey)}')">Opslaan</button>
+          ${mine ? `<button type="button" class="btn-secondary rating-remove" onclick="removeRating('${escapeHtml(weekKey)}')">Verwijder mijn beoordeling</button>` : ''}
+          <span class="rating-status" id="rating-status-${escapeHtml(weekKey)}"></span>
+        </div>
+      </div>
+    `;
+  } else {
+    html += `
+      <div class="rating-login-hint">
+        <a href="/auth/login">Log in</a> om deze lunch te beoordelen.
+      </div>
+    `;
+  }
+
+  // Others' ratings + comments
+  if (others.length > 0 || (mine && mine.comment)) {
+    html += '<div class="ratings-list">';
+    if (mine && mine.comment) {
+      html += renderRatingItem({ ...mine, voter_name: mine.voter_name || 'Jij', is_mine: 1 });
+    }
+    for (const r of others) {
+      html += renderRatingItem(r);
+    }
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function renderRatingItem(r) {
+  const comment = r.comment ? `<div class="rating-item-comment">${escapeHtml(r.comment)}</div>` : '';
+  return `
+    <div class="rating-item ${r.is_mine ? 'is-mine' : ''}">
+      <div class="rating-item-head">
+        <span class="rating-item-name">${escapeHtml(r.voter_name)}${r.is_mine ? ' <span class="you-tag">jij</span>' : ''}</span>
+        <span class="rating-item-score">${r.rating}/10</span>
+      </div>
+      ${renderStarsReadonly(r.rating)}
+      ${comment}
+    </div>
+  `;
+}
+
+function setRating(weekKey, value) {
+  const data = detailCache[weekKey];
+  if (!data) return;
+  // Preserve any text the user typed before re-rendering
+  const typed = document.getElementById(`rating-comment-${weekKey}`)?.value;
+  const existingComment = typed != null ? typed : (data.mine?.comment || '');
+  data.mine = {
+    ...(data.mine || {}),
+    rating: value,
+    comment: existingComment,
+    voter_name: data.mine?.voter_name || (authState.user?.name || voterName),
+    is_mine: 1,
+  };
+  renderRatingDetail(weekKey);
+}
+
+async function saveRating(weekKey) {
+  if (authState.authEnabled && !authState.user) {
+    window.location.href = '/auth/login';
+    return;
+  }
+  const data = detailCache[weekKey];
+  const rating = data?.mine?.rating;
+  if (rating == null) {
+    setStatus(weekKey, 'Kies eerst een score', true);
+    return;
+  }
+  const comment = document.getElementById(`rating-comment-${weekKey}`)?.value || '';
+
+  setStatus(weekKey, 'Opslaan...', false);
+  try {
+    const res = await fetch('/api/ratings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ weekKey, rating, comment, voterName }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      setStatus(weekKey, json.error || 'Opslaan mislukt', true);
+      return;
+    }
+    setStatus(weekKey, 'Opgeslagen!', false);
+    await loadRatingDetail(weekKey);
+    // Refresh list to update aggregates and my_rating badge
+    await loadHistory();
+  } catch (err) {
+    setStatus(weekKey, 'Netwerkfout. Probeer opnieuw.', true);
+  }
+}
+
+async function removeRating(weekKey) {
+  if (!confirm('Jouw beoordeling verwijderen?')) return;
+  try {
+    const res = await fetch(`/api/ratings/${encodeURIComponent(weekKey)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voterName }),
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      setStatus(weekKey, json.error || 'Verwijderen mislukt', true);
+      return;
+    }
+    await loadRatingDetail(weekKey);
+    await loadHistory();
+  } catch (err) {
+    setStatus(weekKey, 'Netwerkfout. Probeer opnieuw.', true);
+  }
+}
+
+function setStatus(weekKey, msg, isError) {
+  const el = document.getElementById(`rating-status-${weekKey}`);
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--danger)' : 'var(--success)';
 }
 
 function loadAdminList() {

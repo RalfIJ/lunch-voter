@@ -193,6 +193,18 @@ db.exec(`
     decided_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
   );
+
+  CREATE TABLE IF NOT EXISTS winner_ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_key TEXT NOT NULL,
+    voter_email TEXT NOT NULL,
+    voter_name TEXT NOT NULL,
+    rating INTEGER NOT NULL,
+    comment TEXT,
+    rated_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(week_key, voter_email)
+  );
 `);
 
 // --- Migrate votes table: allow multiple votes per person ---
@@ -519,8 +531,99 @@ app.post('/api/voting/finalize', requireAdmin, (req, res) => {
 });
 
 app.get('/api/history', (req, res) => {
-  const winners = db.prepare('SELECT * FROM past_winners ORDER BY decided_at DESC LIMIT 52').all();
+  const myEmail = req.session?.user?.email
+    || (req.query.voterName ? String(req.query.voterName).trim().toLowerCase() : '');
+  const winners = db.prepare(`
+    SELECT pw.*,
+           agg.avg_rating,
+           COALESCE(agg.rating_count, 0) AS rating_count,
+           own.rating AS my_rating,
+           own.comment AS my_comment
+    FROM past_winners pw
+    LEFT JOIN (
+      SELECT week_key, AVG(rating) AS avg_rating, COUNT(*) AS rating_count
+      FROM winner_ratings GROUP BY week_key
+    ) agg ON agg.week_key = pw.week_key
+    LEFT JOIN winner_ratings own
+      ON own.week_key = pw.week_key AND own.voter_email = ?
+    ORDER BY pw.decided_at DESC LIMIT 52
+  `).all(myEmail);
   res.json(winners);
+});
+
+// --- Ratings for past winners ---
+
+function getRaterIdentity(req) {
+  if (req.session?.user) {
+    return {
+      email: req.session.user.email,
+      name: req.session.user.name,
+    };
+  }
+  const name = (req.body?.voterName || '').trim();
+  if (!name) return null;
+  return { email: name.toLowerCase(), name };
+}
+
+app.get('/api/ratings/:weekKey', (req, res) => {
+  const { weekKey } = req.params;
+  const myEmail = req.session?.user?.email
+    || (req.query.voterName ? String(req.query.voterName).trim().toLowerCase() : '');
+
+  const ratings = db.prepare(`
+    SELECT voter_name, rating, comment, rated_at, updated_at,
+           (voter_email = ?) AS is_mine
+    FROM winner_ratings
+    WHERE week_key = ?
+    ORDER BY updated_at DESC
+  `).all(myEmail, weekKey);
+
+  let avg = null;
+  let count = ratings.length;
+  if (count > 0) {
+    avg = ratings.reduce((s, r) => s + r.rating, 0) / count;
+  }
+
+  const mine = ratings.find(r => r.is_mine) || null;
+  res.json({ weekKey, avg, count, mine, ratings });
+});
+
+app.post('/api/ratings', requireAuth, (req, res) => {
+  const { weekKey, rating, comment } = req.body;
+
+  if (!weekKey) return res.status(400).json({ error: 'weekKey is verplicht' });
+  const r = Number(rating);
+  if (!Number.isInteger(r) || r < 0 || r > 10) {
+    return res.status(400).json({ error: 'Rating moet een geheel getal tussen 0 en 10 zijn' });
+  }
+
+  const winner = db.prepare('SELECT id FROM past_winners WHERE week_key = ?').get(weekKey);
+  if (!winner) return res.status(404).json({ error: 'Geen winnaar voor deze week' });
+
+  const ident = getRaterIdentity(req);
+  if (!ident) return res.status(400).json({ error: 'Naam is verplicht' });
+
+  const trimmedComment = typeof comment === 'string' ? comment.trim().slice(0, 1000) : null;
+
+  db.prepare(`
+    INSERT INTO winner_ratings (week_key, voter_email, voter_name, rating, comment, rated_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(week_key, voter_email) DO UPDATE SET
+      voter_name = excluded.voter_name,
+      rating = excluded.rating,
+      comment = excluded.comment,
+      updated_at = datetime('now')
+  `).run(weekKey, ident.email, ident.name, r, trimmedComment || null);
+
+  res.json({ message: 'Beoordeling opgeslagen', rating: r, comment: trimmedComment });
+});
+
+app.delete('/api/ratings/:weekKey', requireAuth, (req, res) => {
+  const ident = getRaterIdentity(req);
+  if (!ident) return res.status(400).json({ error: 'Naam is verplicht' });
+  db.prepare('DELETE FROM winner_ratings WHERE week_key = ? AND voter_email = ?')
+    .run(req.params.weekKey, ident.email);
+  res.json({ message: 'Beoordeling verwijderd' });
 });
 
 // Statistics
