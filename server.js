@@ -373,7 +373,21 @@ app.get('/api/restaurants', (req, res) => {
   const allowedSort = { name: 'name', rating: 'rating', rating_count: 'rating_count' };
   const sortCol = allowedSort[req.query.sort] || 'rating';
   const order = req.query.order === 'asc' ? 'ASC' : 'DESC';
-  const restaurants = db.prepare(`SELECT * FROM restaurants ORDER BY ${sortCol} ${order}`).all();
+  const restaurants = db.prepare(`
+    SELECT r.*,
+           agg.our_avg_rating,
+           COALESCE(agg.our_rating_count, 0) AS our_rating_count
+    FROM restaurants r
+    LEFT JOIN (
+      SELECT pw.restaurant_id,
+             AVG(wr.rating) AS our_avg_rating,
+             COUNT(wr.id)   AS our_rating_count
+      FROM past_winners pw
+      JOIN winner_ratings wr ON wr.week_key = pw.week_key
+      GROUP BY pw.restaurant_id
+    ) agg ON agg.restaurant_id = r.id
+    ORDER BY r.${sortCol} ${order}
+  `).all();
   res.json(restaurants);
 });
 

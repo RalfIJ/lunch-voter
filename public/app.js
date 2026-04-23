@@ -11,6 +11,30 @@ let currentCuisineFilter = '';
 let currentRatingFilter = 0;
 let currentOpenFilter = true;
 
+const VALID_TABS = ['vote', 'results', 'history', 'stats', 'admin'];
+
+function getTabFromHash() {
+  const raw = (location.hash || '').replace(/^#/, '');
+  return VALID_TABS.includes(raw) ? raw : null;
+}
+
+function activateTab(tabName) {
+  if (!tabName) return;
+  const btn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`);
+  const pane = document.getElementById(`tab-${tabName}`);
+  if (!btn || !pane) return;
+
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  pane.classList.add('active');
+
+  if (tabName === 'results') loadResults();
+  if (tabName === 'history') loadHistory();
+  if (tabName === 'stats') loadStats();
+  if (tabName === 'admin') loadAdminList();
+}
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
   // Check auth state first
@@ -19,17 +43,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Tab navigation
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
-
-      if (btn.dataset.tab === 'results') loadResults();
-      if (btn.dataset.tab === 'history') loadHistory();
-      if (btn.dataset.tab === 'stats') loadStats();
-      if (btn.dataset.tab === 'admin') loadAdminList();
+      activateTab(btn.dataset.tab);
+      if (history.replaceState) {
+        history.replaceState(null, '', `#${btn.dataset.tab}`);
+      } else {
+        location.hash = btn.dataset.tab;
+      }
     });
   });
+
+  // Restore tab from hash on load + react to hash changes (back/forward)
+  activateTab(getTabFromHash());
+  window.addEventListener('hashchange', () => activateTab(getTabFromHash()));
 
   // Filter/sort listeners
   document.getElementById('filter-cuisine').addEventListener('change', (e) => {
@@ -292,6 +317,7 @@ async function loadHistory() {
 
 function renderHistoryList() {
   const container = document.getElementById('history-list');
+  const prevExpanded = expandedWeekKey;
   container.innerHTML = historyData.map(h => {
     const avgStr = formatAvg(h.avg_rating);
     const expanded = expandedWeekKey === h.week_key;
@@ -319,6 +345,12 @@ function renderHistoryList() {
       </div>
     `;
   }).join('');
+
+  // If a row was expanded, repaint its detail from cache so refreshes don't
+  // revert it to the "laden..." placeholder.
+  if (prevExpanded && detailCache[prevExpanded]) {
+    renderRatingDetail(prevExpanded);
+  }
 }
 
 async function toggleHistoryItem(weekKey) {
@@ -828,8 +860,20 @@ function renderRestaurants() {
           </a>` : ''}
         </div>
         <div class="card-meta">
-          ${r.rating ? `<span class="star">★</span> <span class="rating">${typeof r.rating === 'number' ? r.rating.toFixed(1) : r.rating}</span>` : ''}
-          ${r.rating_count ? `<span class="rating-count">(${r.rating_count})</span>` : ''}
+          ${r.rating ? `
+            <span class="card-rating card-rating-tb" title="Thuisbezorgd beoordeling">
+              <span class="rating-source">TB</span>
+              <span class="star">★</span>
+              <span class="rating">${typeof r.rating === 'number' ? r.rating.toFixed(1) : r.rating}<span class="rating-max">/5</span></span>
+              ${r.rating_count ? `<span class="rating-count">(${r.rating_count})</span>` : ''}
+            </span>` : ''}
+          ${r.our_rating_count > 0 ? `
+            <span class="card-rating card-rating-ours" title="Onze lunch-beoordelingen">
+              <span class="rating-source">Onze</span>
+              <span class="star">★</span>
+              <span class="rating">${(Math.round(r.our_avg_rating * 10) / 10).toFixed(1)}<span class="rating-max">/10</span></span>
+              <span class="rating-count">(${r.our_rating_count})</span>
+            </span>` : ''}
           ${!r.is_open ? '<span class="closed-badge">Gesloten</span>' : ''}
         </div>
         <div class="card-footer">

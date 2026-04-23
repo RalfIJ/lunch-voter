@@ -576,7 +576,8 @@ h2 {
 .card-meta {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
   font-size: 0.85rem;
   margin-bottom: 0.6rem;
 }
@@ -590,9 +591,39 @@ h2 {
   color: var(--text);
 }
 
+.card-meta .rating .rating-max {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.78rem;
+}
+
 .card-meta .rating-count {
   color: var(--text-light);
   font-size: 0.8rem;
+}
+
+.card-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.card-rating .rating-source {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.38rem;
+  border-radius: 100px;
+  color: var(--text-light);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+}
+
+.card-rating-ours .rating-source {
+  color: var(--primary);
+  background: rgba(211, 34, 68, 0.12);
+  border-color: rgba(211, 34, 68, 0.3);
 }
 
 .card-meta .closed-badge {
