@@ -205,6 +205,11 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(week_key, voter_email)
   );
+
+  CREATE TABLE IF NOT EXISTS notifications_sent (
+    event_key TEXT PRIMARY KEY,
+    sent_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // --- Migrate votes table: allow multiple votes per person ---
@@ -755,10 +760,176 @@ app.get('/api/state/export', (req, res) => {
   res.json({ sessions, votes, past_winners });
 });
 
+// --- Teams notifications ---
+const TEAMS_WEBHOOK_URL = process.env.TEAMS_WEBHOOK_URL || '';
+const APP_URL = (process.env.APP_URL || '').replace(/\/$/, '');
+
+function buildAdaptiveCard({ title, text, actions = [] }) {
+  return {
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    type: 'AdaptiveCard',
+    version: '1.4',
+    body: [
+      { type: 'TextBlock', size: 'Large', weight: 'Bolder', wrap: true, text: title },
+      { type: 'TextBlock', wrap: true, text },
+    ],
+    actions: actions.map(a => ({ type: 'Action.OpenUrl', title: a.title, url: a.url })),
+  };
+}
+
+async function sendTeamsCard({ title, text, actions = [] }) {
+  if (!TEAMS_WEBHOOK_URL) {
+    console.log('[teams] TEAMS_WEBHOOK_URL not set; skipping notification:', title);
+    return { ok: false, skipped: true };
+  }
+  const card = buildAdaptiveCard({ title, text, actions });
+  // Send a flexible payload: simple Workflows templates read `text`, richer
+  // ones render the adaptive card attachment.
+  const payload = {
+    type: 'message',
+    text: `${title}\n\n${text}`,
+    attachments: [
+      { contentType: 'application/vnd.microsoft.card.adaptive', content: card },
+    ],
+  };
+  try {
+    const res = await fetch(TEAMS_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.text();
+    if (!res.ok) {
+      console.error('[teams] webhook failed', res.status, body);
+      return { ok: false, status: res.status, body };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('[teams] webhook error', err);
+    return { ok: false, error: err.message };
+  }
+}
+
+function alreadySent(eventKey) {
+  return !!db.prepare('SELECT 1 FROM notifications_sent WHERE event_key = ?').get(eventKey);
+}
+
+function markSent(eventKey) {
+  db.prepare('INSERT OR IGNORE INTO notifications_sent (event_key) VALUES (?)').run(eventKey);
+}
+
+async function announceVoteOpen(weekKey) {
+  const actions = APP_URL ? [{ title: 'Ga naar de stemming', url: APP_URL }] : [];
+  return sendTeamsCard({
+    title: 'Lunch stemmen is open!',
+    text: `Stem op je favoriete restaurant voor donderdag. Deadline: donderdag 10:00. (Week ${weekKey})`,
+    actions,
+  });
+}
+
+async function autoFinalizeAndAnnounce(weekKey) {
+  let winner = db.prepare(`
+    SELECT pw.*, r.slug
+    FROM past_winners pw
+    LEFT JOIN restaurants r ON r.id = pw.restaurant_id
+    WHERE pw.week_key = ?
+  `).get(weekKey);
+
+  if (!winner) {
+    const session = getOrCreateSession();
+    const tallies = db.prepare(`
+      SELECT v.restaurant_id, r.name as restaurant_name, r.slug, COUNT(*) as vote_count
+      FROM votes v JOIN restaurants r ON v.restaurant_id = r.id
+      WHERE v.session_id = ?
+      GROUP BY v.restaurant_id
+      ORDER BY vote_count DESC
+    `).all(session.id);
+
+    if (tallies.length === 0) {
+      return sendTeamsCard({
+        title: 'Geen lunch deze week',
+        text: 'Niemand heeft gestemd. Volgende maandag weer!',
+        actions: APP_URL ? [{ title: 'Open app', url: APP_URL }] : [],
+      });
+    }
+
+    const maxVotes = tallies[0].vote_count;
+    const leaders = tallies.filter(t => t.vote_count === maxVotes);
+    winner = leaders[Math.floor(Math.random() * leaders.length)];
+
+    db.prepare(
+      'INSERT INTO past_winners (week_key, restaurant_id, restaurant_name, vote_count) VALUES (?, ?, ?, ?)'
+    ).run(weekKey, winner.restaurant_id, winner.restaurant_name, winner.vote_count);
+
+    console.log(`[scheduler] auto-finalized ${weekKey}: ${winner.restaurant_name} (${winner.vote_count} stemmen)`);
+  }
+
+  const actions = [];
+  if (winner.slug) {
+    actions.push({ title: 'Bestellen op Thuisbezorgd', url: `https://www.thuisbezorgd.nl/menu/${winner.slug}` });
+  }
+  if (APP_URL) {
+    actions.push({ title: 'Resultaten', url: `${APP_URL}/#results` });
+  }
+
+  return sendTeamsCard({
+    title: `De lunch-winnaar is: ${winner.restaurant_name}`,
+    text: `${winner.vote_count} stem${winner.vote_count === 1 ? '' : 'men'} deze week. Bestellen via Thuisbezorgd tussen 11:00 en 13:30. (Week ${weekKey})`,
+    actions,
+  });
+}
+
+async function tickScheduler() {
+  if (!TEAMS_WEBHOOK_URL) return;
+  const now = new Date();
+  const day = now.getDay();
+  const hours = now.getHours();
+  const weekKey = getThursdayWeekKey(now);
+
+  // Monday 09:00+ — voting is open
+  if (day === 1 && hours >= 9) {
+    const key = `vote-open:${weekKey}`;
+    if (!alreadySent(key)) {
+      const r = await announceVoteOpen(weekKey);
+      if (r.ok) markSent(key);
+    }
+  }
+
+  // Thursday 10:00+ — winner (auto-finalize if admin didn't click the button)
+  if (day === 4 && hours >= 10) {
+    const key = `winner-announced:${weekKey}`;
+    if (!alreadySent(key)) {
+      const r = await autoFinalizeAndAnnounce(weekKey);
+      if (r.ok) markSent(key);
+    }
+  }
+}
+
+// Admin: trigger a test message to verify the webhook is wired up correctly.
+app.post('/api/teams/test', requireAdmin, async (req, res) => {
+  if (!TEAMS_WEBHOOK_URL) {
+    return res.status(400).json({ error: 'TEAMS_WEBHOOK_URL is niet ingesteld op de server.' });
+  }
+  const result = await sendTeamsCard({
+    title: 'Lunch Voter — testbericht',
+    text: 'Als je dit ziet, werkt de Teams-koppeling. Je krijgt maandag 09:00 en donderdag 10:00 automatisch een bericht.',
+    actions: APP_URL ? [{ title: 'Open app', url: APP_URL }] : [],
+  });
+  if (result.ok) return res.json({ message: 'Testbericht verstuurd' });
+  res.status(502).json({ error: 'Versturen mislukt', detail: result });
+});
+
 // --- Start ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Lunch Voter running at http://localhost:${PORT}`);
   if (authEnabled()) console.log('Google OAuth enabled');
   else console.log('Auth disabled (development mode)');
+  if (TEAMS_WEBHOOK_URL) {
+    console.log('Teams notifications enabled');
+    setTimeout(tickScheduler, 5000);
+    setInterval(tickScheduler, 60 * 1000);
+  } else {
+    console.log('Teams notifications disabled (TEAMS_WEBHOOK_URL not set)');
+  }
 });

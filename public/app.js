@@ -77,6 +77,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Refresh button
   document.getElementById('refresh-btn').addEventListener('click', refreshRestaurants);
 
+  // Teams test button
+  const teamsBtn = document.getElementById('teams-test-btn');
+  if (teamsBtn) teamsBtn.addEventListener('click', sendTeamsTest);
+
   // Add restaurant form
   document.getElementById('add-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -689,6 +693,33 @@ async function castVote(restaurantId) {
   } catch (err) {
     alert('Stem uitbrengen mislukt. Probeer het opnieuw.');
   }
+}
+
+async function sendTeamsTest() {
+  const statusEl = document.getElementById('refresh-status');
+  const btn = document.getElementById('teams-test-btn');
+  btn.disabled = true;
+  statusEl.textContent = 'Testbericht versturen naar Teams...';
+  statusEl.style.color = 'var(--text-light)';
+
+  try {
+    const res = await fetch('/api/teams/test', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      statusEl.textContent = data.message || 'Testbericht verstuurd';
+      statusEl.style.color = 'var(--success)';
+    } else if (res.status === 403) {
+      statusEl.textContent = 'Alleen beheerders mogen Teams testen';
+      statusEl.style.color = 'var(--danger)';
+    } else {
+      statusEl.textContent = data.error || 'Versturen mislukt';
+      statusEl.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    statusEl.textContent = 'Netwerkfout. Probeer het opnieuw.';
+    statusEl.style.color = 'var(--danger)';
+  }
+  btn.disabled = false;
 }
 
 async function deleteRestaurant(id) {
