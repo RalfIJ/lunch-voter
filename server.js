@@ -489,6 +489,21 @@ app.post('/api/voting/vote', requireAuth, (req, res) => {
   const { restaurantId } = req.body;
   if (!restaurantId) return res.status(400).json({ error: 'restaurantId is verplicht' });
 
+  const votingStatus = getVotingStatus();
+  if (!votingStatus.votingOpen) {
+    return res.status(403).json({
+      error: votingStatus.resultsReady
+        ? 'Stemmen is gesloten voor deze week. Opent weer maandag om 09:00.'
+        : 'Stemmen is gesloten. Opent maandag om 09:00.',
+    });
+  }
+
+  const weekKey = getThursdayWeekKey();
+  const finalizedWinner = db.prepare('SELECT id FROM past_winners WHERE week_key = ?').get(weekKey);
+  if (finalizedWinner) {
+    return res.status(403).json({ error: 'De winnaar van deze week is al gekozen.' });
+  }
+
   const restaurant = db.prepare('SELECT id FROM restaurants WHERE id = ?').get(restaurantId);
   if (!restaurant) return res.status(400).json({ error: 'Restaurant niet gevonden' });
 

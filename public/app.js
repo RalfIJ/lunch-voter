@@ -652,6 +652,12 @@ async function refreshRestaurants() {
 }
 
 async function castVote(restaurantId) {
+  if (!votingStatus.votingOpen) {
+    alert(votingStatus.resultsReady
+      ? 'Stemmen is gesloten voor deze week. Opent weer maandag om 09:00.'
+      : 'Stemmen is gesloten. Opent maandag om 09:00.');
+    return;
+  }
   if (authState.authEnabled && !authState.user) {
     window.location.href = '/auth/login';
     return;
@@ -671,6 +677,12 @@ async function castVote(restaurantId) {
     if (res.status === 401) {
       alert('Je sessie is verlopen. Log opnieuw in.');
       await checkAuth();
+      return;
+    }
+    if (res.status === 403) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'Stemmen is niet toegestaan.');
+      await loadVotingStatus();
       return;
     }
     await loadVotingStatus();
@@ -780,6 +792,9 @@ function renderStatus() {
 function renderRestaurants() {
   const container = document.getElementById('restaurant-list');
   const countEl = document.getElementById('restaurant-count');
+
+  // Lock the grid when voting is closed so cards look and feel inert.
+  container.classList.toggle('locked', !votingStatus.votingOpen);
 
   if (restaurants.length === 0) {
     container.innerHTML = `
