@@ -272,6 +272,8 @@ async function loadResults() {
 let historyData = [];
 let expandedWeekKey = null;
 let detailCache = {};
+let expandedCommentsRatings = new Set();
+let openCommentForms = new Set();
 
 function escapeHtml(str) {
   if (str == null) return '';
@@ -391,8 +393,6 @@ function renderRatingDetail(weekKey) {
   const myRating = mine ? mine.rating : null;
   const myComment = mine ? (mine.comment || '') : '';
 
-  const others = data.ratings.filter(r => !r.is_mine);
-
   let html = '';
 
   // Aggregate
@@ -436,14 +436,11 @@ function renderRatingDetail(weekKey) {
     `;
   }
 
-  // Others' ratings + comments
-  if (others.length > 0 || (mine && mine.comment)) {
+  // Full list — includes mine so others can react/comment on it
+  if (data.ratings.length > 0) {
     html += '<div class="ratings-list">';
-    if (mine && mine.comment) {
-      html += renderRatingItem({ ...mine, voter_name: mine.voter_name || 'Jij', is_mine: 1 });
-    }
-    for (const r of others) {
-      html += renderRatingItem(r);
+    for (const r of data.ratings) {
+      html += renderRatingItem(r, weekKey, canRate);
     }
     html += '</div>';
   }
@@ -451,18 +448,151 @@ function renderRatingDetail(weekKey) {
   el.innerHTML = html;
 }
 
-function renderRatingItem(r) {
-  const comment = r.comment ? `<div class="rating-item-comment">${escapeHtml(r.comment)}</div>` : '';
+function renderRatingItem(r, weekKey, canInteract) {
+  const commentBlock = r.comment ? `<div class="rating-item-comment">${escapeHtml(r.comment)}</div>` : '';
+  const rx = r.reactions || { up: 0, down: 0, mine: null };
+  const isOwn = !!r.is_mine;
+  const rxDisabled = isOwn || !canInteract;
+  const rxTitle = isOwn ? 'Je kunt niet op je eigen beoordeling stemmen' : (canInteract ? '' : 'Log in om te reageren');
+
+  const comments = r.comments || [];
+  const expanded = expandedCommentsRatings.has(r.id);
+  const showList = expanded ? comments : comments.slice(0, 5);
+  const hiddenCount = comments.length - showList.length;
+  const formOpen = openCommentForms.has(r.id);
+  const wkEsc = escapeHtml(weekKey);
+
+  const commentBtnLabel = comments.length
+    ? `${comments.length} reactie${comments.length === 1 ? '' : 's'}`
+    : 'Reageer';
+
+  const commentsListHtml = comments.length === 0 ? '' : `
+    <div class="rating-comments-list">
+      ${showList.map(c => `
+        <div class="rating-comment-item ${c.is_mine ? 'is-mine' : ''}">
+          <span class="comment-name">${escapeHtml(c.voter_name)}${c.is_mine ? ' <span class="you-tag">jij</span>' : ''}</span>
+          <span class="comment-body">${escapeHtml(c.body)}</span>
+          ${c.is_mine ? `<button type="button" class="comment-delete" onclick="deleteComment(${c.id}, '${wkEsc}')" title="Verwijder reactie">×</button>` : ''}
+        </div>
+      `).join('')}
+      ${comments.length > 5 ? `<button type="button" class="comments-expand" onclick="toggleExpandComments(${r.id}, '${wkEsc}')">${expanded ? 'Minder tonen' : `Toon ${hiddenCount} meer`}</button>` : ''}
+    </div>
+  `;
+
+  const commentFormHtml = !canInteract ? '' : `
+    <div class="rating-comment-form" id="comment-form-${r.id}" style="${formOpen ? '' : 'display:none'}">
+      <input type="text" id="comment-input-${r.id}" class="comment-input" placeholder="Jouw reactie..." maxlength="500" onkeydown="if(event.key==='Enter'){event.preventDefault();submitComment(${r.id}, '${wkEsc}');}">
+      <button type="button" class="btn-primary btn-sm" onclick="submitComment(${r.id}, '${wkEsc}')">Plaats</button>
+    </div>
+  `;
+
   return `
-    <div class="rating-item ${r.is_mine ? 'is-mine' : ''}">
+    <div class="rating-item ${isOwn ? 'is-mine' : ''}" data-rating-id="${r.id}">
       <div class="rating-item-head">
-        <span class="rating-item-name">${escapeHtml(r.voter_name)}${r.is_mine ? ' <span class="you-tag">jij</span>' : ''}</span>
+        <span class="rating-item-name">${escapeHtml(r.voter_name)}${isOwn ? ' <span class="you-tag">jij</span>' : ''}</span>
         <span class="rating-item-score">${r.rating}/10</span>
       </div>
       ${renderStarsReadonly(r.rating)}
-      ${comment}
+      ${commentBlock}
+      <div class="rating-reactions">
+        <button type="button" class="rx-btn ${rx.mine === 1 ? 'active up' : ''}" ${rxDisabled ? 'disabled' : ''} onclick="toggleReaction(${r.id}, 1, '${wkEsc}')" title="${rxTitle || 'Eens'}">
+          <span class="rx-arrow">▲</span><span class="rx-count">${rx.up}</span>
+        </button>
+        <button type="button" class="rx-btn ${rx.mine === -1 ? 'active down' : ''}" ${rxDisabled ? 'disabled' : ''} onclick="toggleReaction(${r.id}, -1, '${wkEsc}')" title="${rxTitle || 'Oneens'}">
+          <span class="rx-arrow">▼</span><span class="rx-count">${rx.down}</span>
+        </button>
+        <button type="button" class="rx-comment-btn" ${canInteract ? '' : 'disabled'} onclick="toggleCommentForm(${r.id})">
+          ${commentBtnLabel}
+        </button>
+      </div>
+      ${commentsListHtml}
+      ${commentFormHtml}
     </div>
   `;
+}
+
+async function toggleReaction(ratingId, value, weekKey) {
+  if (authState.authEnabled && !authState.user) {
+    window.location.href = '/auth/login';
+    return;
+  }
+  try {
+    const res = await fetch(`/api/ratings/${ratingId}/reactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value, voterName }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(j.error || 'Reactie mislukt');
+      return;
+    }
+    await loadRatingDetail(weekKey);
+  } catch (err) {
+    alert('Netwerkfout. Probeer opnieuw.');
+  }
+}
+
+function toggleCommentForm(ratingId) {
+  if (openCommentForms.has(ratingId)) openCommentForms.delete(ratingId);
+  else openCommentForms.add(ratingId);
+  const wrap = document.getElementById(`comment-form-${ratingId}`);
+  if (wrap) wrap.style.display = openCommentForms.has(ratingId) ? 'flex' : 'none';
+  if (openCommentForms.has(ratingId)) {
+    setTimeout(() => document.getElementById(`comment-input-${ratingId}`)?.focus(), 0);
+  }
+}
+
+function toggleExpandComments(ratingId, weekKey) {
+  if (expandedCommentsRatings.has(ratingId)) expandedCommentsRatings.delete(ratingId);
+  else expandedCommentsRatings.add(ratingId);
+  renderRatingDetail(weekKey);
+}
+
+async function submitComment(ratingId, weekKey) {
+  if (authState.authEnabled && !authState.user) {
+    window.location.href = '/auth/login';
+    return;
+  }
+  const input = document.getElementById(`comment-input-${ratingId}`);
+  const body = (input?.value || '').trim();
+  if (!body) return;
+  try {
+    const res = await fetch(`/api/ratings/${ratingId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body, voterName }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(j.error || 'Reactie plaatsen mislukt');
+      return;
+    }
+    if (input) input.value = '';
+    openCommentForms.delete(ratingId);
+    await loadRatingDetail(weekKey);
+  } catch (err) {
+    alert('Netwerkfout. Probeer opnieuw.');
+  }
+}
+
+async function deleteComment(commentId, weekKey) {
+  if (!confirm('Reactie verwijderen?')) return;
+  try {
+    const res = await fetch(`/api/comments/${commentId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voterName }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(j.error || 'Verwijderen mislukt');
+      return;
+    }
+    await loadRatingDetail(weekKey);
+  } catch (err) {
+    alert('Netwerkfout. Probeer opnieuw.');
+  }
 }
 
 function setRating(weekKey, value) {

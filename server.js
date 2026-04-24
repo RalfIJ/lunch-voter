@@ -210,6 +210,26 @@ db.exec(`
     event_key TEXT PRIMARY KEY,
     sent_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS rating_reactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rating_id INTEGER NOT NULL,
+    voter_email TEXT NOT NULL,
+    value INTEGER NOT NULL CHECK(value IN (-1, 1)),
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (rating_id) REFERENCES winner_ratings(id) ON DELETE CASCADE,
+    UNIQUE(rating_id, voter_email)
+  );
+
+  CREATE TABLE IF NOT EXISTS rating_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rating_id INTEGER NOT NULL,
+    voter_email TEXT NOT NULL,
+    voter_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (rating_id) REFERENCES winner_ratings(id) ON DELETE CASCADE
+  );
 `);
 
 // --- Migrate votes table: allow multiple votes per person ---
@@ -605,15 +625,53 @@ app.get('/api/ratings/:weekKey', (req, res) => {
     || (req.query.voterName ? String(req.query.voterName).trim().toLowerCase() : '');
 
   const ratings = db.prepare(`
-    SELECT voter_name, rating, comment, rated_at, updated_at,
+    SELECT id, voter_name, rating, comment, rated_at, updated_at,
            (voter_email = ?) AS is_mine
     FROM winner_ratings
     WHERE week_key = ?
     ORDER BY updated_at DESC
   `).all(myEmail, weekKey);
 
+  if (ratings.length > 0) {
+    const ids = ratings.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    const rx = db.prepare(`
+      SELECT rating_id, value, (voter_email = ?) AS is_mine
+      FROM rating_reactions WHERE rating_id IN (${placeholders})
+    `).all(myEmail, ...ids);
+
+    const reactionsByRating = {};
+    for (const x of rx) {
+      const key = x.rating_id;
+      if (!reactionsByRating[key]) reactionsByRating[key] = { up: 0, down: 0, mine: null };
+      if (x.value === 1) reactionsByRating[key].up++;
+      else reactionsByRating[key].down++;
+      if (x.is_mine) reactionsByRating[key].mine = x.value;
+    }
+
+    const cmt = db.prepare(`
+      SELECT id, rating_id, voter_name, body, created_at,
+             (voter_email = ?) AS is_mine
+      FROM rating_comments
+      WHERE rating_id IN (${placeholders})
+      ORDER BY created_at ASC
+    `).all(myEmail, ...ids);
+
+    const commentsByRating = {};
+    for (const c of cmt) {
+      if (!commentsByRating[c.rating_id]) commentsByRating[c.rating_id] = [];
+      commentsByRating[c.rating_id].push(c);
+    }
+
+    for (const r of ratings) {
+      r.reactions = reactionsByRating[r.id] || { up: 0, down: 0, mine: null };
+      r.comments = commentsByRating[r.id] || [];
+    }
+  }
+
   let avg = null;
-  let count = ratings.length;
+  const count = ratings.length;
   if (count > 0) {
     avg = ratings.reduce((s, r) => s + r.rating, 0) / count;
   }
@@ -658,6 +716,109 @@ app.delete('/api/ratings/:weekKey', requireAuth, (req, res) => {
   db.prepare('DELETE FROM winner_ratings WHERE week_key = ? AND voter_email = ?')
     .run(req.params.weekKey, ident.email);
   res.json({ message: 'Beoordeling verwijderd' });
+});
+
+// --- Reactions on a rating (up/down) ---
+
+app.post('/api/ratings/:ratingId/reactions', requireAuth, (req, res) => {
+  const ratingId = Number(req.params.ratingId);
+  const value = Number(req.body?.value);
+  if (![1, -1].includes(value)) return res.status(400).json({ error: 'value moet 1 of -1 zijn' });
+
+  const rating = db.prepare('SELECT voter_email FROM winner_ratings WHERE id = ?').get(ratingId);
+  if (!rating) return res.status(404).json({ error: 'Beoordeling niet gevonden' });
+
+  const ident = getRaterIdentity(req);
+  if (!ident) return res.status(400).json({ error: 'Naam is verplicht' });
+  if (rating.voter_email === ident.email) {
+    return res.status(400).json({ error: 'Je kunt niet op je eigen beoordeling stemmen' });
+  }
+
+  const existing = db.prepare(
+    'SELECT value FROM rating_reactions WHERE rating_id = ? AND voter_email = ?'
+  ).get(ratingId, ident.email);
+
+  if (existing && existing.value === value) {
+    db.prepare('DELETE FROM rating_reactions WHERE rating_id = ? AND voter_email = ?')
+      .run(ratingId, ident.email);
+    return res.json({ action: 'removed' });
+  }
+
+  db.prepare(`
+    INSERT INTO rating_reactions (rating_id, voter_email, value)
+    VALUES (?, ?, ?)
+    ON CONFLICT(rating_id, voter_email) DO UPDATE SET
+      value = excluded.value,
+      created_at = datetime('now')
+  `).run(ratingId, ident.email, value);
+
+  res.json({ action: existing ? 'changed' : 'added', value });
+});
+
+// --- Comments on a rating ---
+
+app.post('/api/ratings/:ratingId/comments', requireAuth, (req, res) => {
+  const ratingId = Number(req.params.ratingId);
+  const body = String(req.body?.body || '').trim();
+  if (!body) return res.status(400).json({ error: 'Reactie mag niet leeg zijn' });
+  if (body.length > 500) return res.status(400).json({ error: 'Reactie is te lang (max 500 tekens)' });
+
+  const rating = db.prepare('SELECT id FROM winner_ratings WHERE id = ?').get(ratingId);
+  if (!rating) return res.status(404).json({ error: 'Beoordeling niet gevonden' });
+
+  const ident = getRaterIdentity(req);
+  if (!ident) return res.status(400).json({ error: 'Naam is verplicht' });
+
+  // Cooldown: min 10s between comments from same user on same rating
+  const last = db.prepare(`
+    SELECT (strftime('%s','now') - strftime('%s', created_at)) AS elapsed
+    FROM rating_comments
+    WHERE rating_id = ? AND voter_email = ?
+    ORDER BY created_at DESC LIMIT 1
+  `).get(ratingId, ident.email);
+  if (last && last.elapsed < 10) {
+    return res.status(429).json({ error: `Even wachten — nog ${10 - last.elapsed}s.` });
+  }
+
+  // Per-user cap: max 3 comments per rating
+  const myCount = db.prepare(
+    'SELECT COUNT(*) AS n FROM rating_comments WHERE rating_id = ? AND voter_email = ?'
+  ).get(ratingId, ident.email).n;
+  if (myCount >= 3) {
+    return res.status(429).json({ error: 'Max 3 reacties per beoordeling. Geef anderen ook een kans.' });
+  }
+
+  // Hard cap per rating to prevent infinite scroll
+  const total = db.prepare(
+    'SELECT COUNT(*) AS n FROM rating_comments WHERE rating_id = ?'
+  ).get(ratingId).n;
+  if (total >= 50) {
+    return res.status(429).json({ error: 'Deze discussie zit vol (max 50 reacties).' });
+  }
+
+  const info = db.prepare(`
+    INSERT INTO rating_comments (rating_id, voter_email, voter_name, body)
+    VALUES (?, ?, ?, ?)
+  `).run(ratingId, ident.email, ident.name, body);
+
+  res.json({ id: info.lastInsertRowid, action: 'added' });
+});
+
+app.delete('/api/comments/:commentId', requireAuth, (req, res) => {
+  const ident = getRaterIdentity(req);
+  if (!ident) return res.status(400).json({ error: 'Niet geautoriseerd' });
+
+  const commentId = Number(req.params.commentId);
+  const c = db.prepare('SELECT voter_email FROM rating_comments WHERE id = ?').get(commentId);
+  if (!c) return res.status(404).json({ error: 'Reactie niet gevonden' });
+
+  const isAdmin = req.session?.user?.isAdmin;
+  if (!isAdmin && c.voter_email !== ident.email) {
+    return res.status(403).json({ error: 'Niet toegestaan' });
+  }
+
+  db.prepare('DELETE FROM rating_comments WHERE id = ?').run(commentId);
+  res.json({ action: 'removed' });
 });
 
 // Statistics
